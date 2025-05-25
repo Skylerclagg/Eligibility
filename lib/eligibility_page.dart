@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api_service.dart';
-import 'models.dart'; // Ensure your models.dart has the rounding functions
+import 'models.dart';
+import 'mobile_eligibility_view.dart';
 
 enum SortableColumn {
   teamNumber,
@@ -15,7 +16,9 @@ enum SortableColumn {
   driverScore,
   programmingScore,
   eligible,
-  grade, // Added Grade
+  grade,
+  pilotAttempts,
+  autonAttempts,
 }
 
 class EligibilityPage extends StatefulWidget {
@@ -58,6 +61,8 @@ class _EligibilityPageState extends State<EligibilityPage> {
   static const String _autoReloadPrefKey = 'autoReloadEnabled';
 
   bool _eventHasSplitGradeAwards = false;
+  bool _isMobileViewEnabled = false;
+  static const String _mobileViewPrefKey = 'mobileViewEnabled';
 
   @override
   void initState() {
@@ -76,6 +81,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   Future<void> _loadInitialSettingsAndData() async {
+    // ... (implementation is the same as previous correct version)
     if (!mounted) return;
     setState(() { loading = true; error = null; });
 
@@ -83,6 +89,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
     final savedProgramId = prefs.getInt('selectedProgramId');
     final savedSeasonId = prefs.getInt('selectedSeasonId');
     _isAutoReloadEnabled = prefs.getBool(_autoReloadPrefKey) ?? false;
+    _isMobileViewEnabled = prefs.getBool(_mobileViewPrefKey) ?? false; 
 
     RobotProgram initialProgram = RobotProgram.values.firstWhere(
         (p) => p.id == savedProgramId, orElse: () => RobotProgram.v5rc);
@@ -136,6 +143,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
   
   void _manageAutoReloadTimer() {
+    // ... (implementation is the same as previous correct version)
     _cancelAutoReloadTimer();
     if (_isAutoReloadEnabled && selectedEvent != null && mounted) {
       _autoReloadTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
@@ -147,11 +155,13 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   void _cancelAutoReloadTimer() {
+    // ... (implementation is the same as previous correct version)
     _autoReloadTimer?.cancel();
     _autoReloadTimer = null;
   }
 
   Future<void> _loadEvents() async {
+    // ... (implementation is the same as previous correct version)
     if (_selectedProgram == null || _selectedSeason == null) {
       if (!mounted) return;
       setState(() => error = 'Program or Season not selected.');
@@ -174,6 +184,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   Future<void> _loadSku() async {
+    // ... (implementation is the same as previous correct version)
     final String rawInput = skuCtrl.text.trim();
     final String processedInput = rawInput.toUpperCase();
 
@@ -240,6 +251,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
   
   void _clearEventData({bool resetSort = false}) {
+    // ... (implementation is the same as previous correct version)
      if (!mounted) return;
      setState(() {
         divisions = [];
@@ -257,6 +269,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   Future<void> _loadAllDataForEvent(int eventId, {bool isAutoReload = false}) async {
+    // ... (implementation is the same as previous correct version)
     if (_programRules == null || _selectedProgram == null) {
       if (!mounted) return;
       setState(() => error = 'Program rules or program not loaded. Please check settings.');
@@ -313,6 +326,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   bool get isCombinedDivisionEvent {
+    // ... (implementation is the same as previous correct version)
     if (_programRules == null) return true; 
     if (!_programRules!.hasMiddleSchoolHighSchoolDivisions) {
       return true;
@@ -321,37 +335,52 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   double get eligibilityThreshold {
+    // ... (implementation is the same as previous correct version)
     if (_programRules == null) return 0.5;
     return _programRules!.threshold;
   }
 
-  Map<int, RawSkill> getConsolidatedSkills() {
-    final Map<int, RawSkill> consolidated = {};
-    for (var skillRun in rawSkills) {
-      consolidated.update(
-        skillRun.teamId,
-        (existing) => RawSkill(
-          teamId: skillRun.teamId,
-          rank: (skillRun.rank > 0 && (existing.rank <= 0 || skillRun.rank < existing.rank)) ? skillRun.rank : existing.rank,
-          programmingScore: existing.programmingScore + skillRun.programmingScore,
-          driverScore: existing.driverScore + skillRun.driverScore,
-        ),
-        ifAbsent: () => skillRun,
-      );
-    }
-    return consolidated;
-  }
-
   List<TeamSkills> get tableRecords {
+    // ... (implementation is the same as previous correct version)
     if (_programRules == null || teams.isEmpty || _selectedProgram == null) return [];
 
-    final Map<int, RawSkill> currentConsolidatedSkills = getConsolidatedSkills();
     final Map<int, Team> teamMap = {for (var t in teams) t.id: t};
 
-    Map<String, List<Ranking>> gradeQualifierRankingsMap = {};
-    Map<String, List<RawSkill>> gradeSkillsRankingsMap = {};
+    Map<int, RawSkill> bestProgrammingRuns = {};
+    Map<int, RawSkill> bestDriverRuns = {};
 
-    // Use the getter, which now considers _eventHasSplitGradeAwards
+    for (var teamEntry in teamMap.entries) {
+        int teamId = teamEntry.key;
+        List<RawSkill> teamRawSkills = rawSkills.where((s) => s.teamId == teamId).toList();
+
+        RawSkill? bestProg = teamRawSkills
+            .where((s) => s.type == 'programming')
+            .fold(null, (RawSkill? prev, current) => (prev == null || current.score > prev.score) ? current : prev);
+        if (bestProg != null) bestProgrammingRuns[teamId] = bestProg;
+
+        RawSkill? bestDriver = teamRawSkills
+            .where((s) => s.type == 'driver')
+            .fold(null, (RawSkill? prev, current) => (prev == null || current.score > prev.score) ? current : prev);
+        if (bestDriver != null) bestDriverRuns[teamId] = bestDriver;
+    }
+    
+    List<Map<String, dynamic>> teamsWithCombinedScoresForOverallRank = [];
+    for (var teamEntry in teamMap.entries) {
+        int teamId = teamEntry.key;
+        int combinedScore = (bestProgrammingRuns[teamId]?.score ?? 0) + (bestDriverRuns[teamId]?.score ?? 0);
+        if (combinedScore > 0 || bestProgrammingRuns.containsKey(teamId) || bestDriverRuns.containsKey(teamId)) {
+             teamsWithCombinedScoresForOverallRank.add({'teamId': teamId, 'combinedScore': combinedScore});
+        }
+    }
+    teamsWithCombinedScoresForOverallRank.sort((a, b) => (b['combinedScore'] as int).compareTo(a['combinedScore'] as int));
+    Map<int, int> overallSkillsRanksMap = {};
+    for (int i = 0; i < teamsWithCombinedScoresForOverallRank.length; i++) {
+        overallSkillsRanksMap[teamsWithCombinedScoresForOverallRank[i]['teamId'] as int] = i + 1;
+    }
+
+    Map<String, List<Ranking>> gradeQualifierRankingsMap = {};
+    Map<String, List<Map<String,dynamic>>> gradeSkillsRankingsMap = {}; 
+
     if (!isCombinedDivisionEvent) { 
       final Set<String> grades = teams.map((t) => t.grade.toLowerCase()).toSet()..removeWhere((g) => g.isEmpty);
       for (String grade in grades) {
@@ -363,83 +392,102 @@ class _EligibilityPageState extends State<EligibilityPage> {
             .toList()
             ..sort((a, b) => a.rank.compareTo(b.rank));
 
-        gradeSkillsRankingsMap[grade] = currentConsolidatedSkills.values
-            .where((s) {
-              final sTeam = teamMap[s.teamId];
-              return sTeam != null && sTeam.grade.toLowerCase() == grade && s.rank > 0;
-            })
-            .toList()
-            ..sort((a, b) => a.rank.compareTo(b.rank));
+        List<Map<String,dynamic>> gradeTeamsWithCombinedScores = [];
+         for (var teamEntry in teamMap.entries) {
+            if (teamEntry.value.grade.toLowerCase() == grade) {
+                int teamId = teamEntry.key;
+                int combinedScore = (bestProgrammingRuns[teamId]?.score ?? 0) + 
+                                      (bestDriverRuns[teamId]?.score ?? 0);
+                 if (combinedScore > 0 || bestProgrammingRuns.containsKey(teamId) || bestDriverRuns.containsKey(teamId) ) {
+                    gradeTeamsWithCombinedScores.add({'teamId': teamId, 'combinedScore': combinedScore});
+                }
+            }
+        }
+        gradeTeamsWithCombinedScores.sort((a,b) => (b['combinedScore'] as int).compareTo(a['combinedScore'] as int));
+        
+        List<Map<String,dynamic>> gradeSkillRanks = [];
+        for(int i=0; i < gradeTeamsWithCombinedScores.length; i++){
+            gradeSkillRanks.add({
+                'teamId': gradeTeamsWithCombinedScores[i]['teamId'] as int,
+                'rank': i+1
+            });
+        }
+        gradeSkillsRankingsMap[grade] = gradeSkillRanks;
       }
     }
 
     return teams.map((team) {
-      final skillsData = currentConsolidatedSkills[team.id];
+      final RawSkill? bestProgRun = bestProgrammingRuns[team.id];
+      final RawSkill? bestDriverRun = bestDriverRuns[team.id];
+      
+      final int teamProgrammingScore = bestProgRun?.score ?? 0;
+      final int teamProgrammingAttempts = bestProgRun?.attempts ?? 0;
+      final int teamDriverScore = bestDriverRun?.score ?? 0;
+      final int teamDriverAttempts = bestDriverRun?.attempts ?? 0;
+
       final overallRankingData = rawRankings.firstWhere((r) => r.teamId == team.id,
           orElse: () => Ranking(teamId: team.id, rank: -1));
 
       int displayQualRank = overallRankingData.rank > 0 ? overallRankingData.rank : -1;
-      int displaySkillsRank = -1;
+      int displaySkillsRank = overallSkillsRanksMap[team.id] ?? -1;
       
-      if(skillsData != null && skillsData.rank > 0){
-          final overallSortedSkills = currentConsolidatedSkills.values.where((s) => s.rank > 0).toList()..sort((a,b)=>a.rank.compareTo(b.rank));
-          displaySkillsRank = overallSortedSkills.indexWhere((s) => s.teamId == team.id) + 1;
-          if(displaySkillsRank == 0) displaySkillsRank = -1;
-      }
-
       bool isInQualifyingRank;
       bool isInSkillsRank;
-      int qualCutoff;
-      int skillsCutoffTargetRank; 
+      int qualCutoffValue; // Renamed for clarity from just 'qualCutoff'
+      int skillsCutoffValue; // Renamed for clarity from 'skillsCutoffTargetRank'
 
       if (isCombinedDivisionEvent) { 
         final totalRankedTeamsInDivision = rawRankings.where((r) => r.rank > 0).length;
-        qualCutoff = max(1, applyProgramSpecificRounding(totalRankedTeamsInDivision * eligibilityThreshold, _selectedProgram!));
-        isInQualifyingRank = displayQualRank > 0 && displayQualRank <= qualCutoff;
+        qualCutoffValue = max(1, applyProgramSpecificRounding(totalRankedTeamsInDivision * eligibilityThreshold, _selectedProgram!));
+        isInQualifyingRank = displayQualRank > 0 && displayQualRank <= qualCutoffValue;
 
-        skillsCutoffTargetRank = max(1, applyProgramSpecificRounding(totalRankedTeamsInDivision * eligibilityThreshold, _selectedProgram!));
-        isInSkillsRank = displaySkillsRank > 0 && displaySkillsRank <= skillsCutoffTargetRank;
+        skillsCutoffValue = max(1, applyProgramSpecificRounding(totalRankedTeamsInDivision * eligibilityThreshold, _selectedProgram!));
+        isInSkillsRank = displaySkillsRank > 0 && displaySkillsRank <= skillsCutoffValue;
       } else { 
         final teamGrade = team.grade.toLowerCase();
         if (teamGrade.isNotEmpty && gradeQualifierRankingsMap.containsKey(teamGrade)) {
             final List<Ranking> gradeQualifiers = gradeQualifierRankingsMap[teamGrade]!;
             final int gradeSpecificQualifierCount = gradeQualifiers.length;
-            qualCutoff = max(1, applyProgramSpecificRounding(gradeSpecificQualifierCount * eligibilityThreshold, _selectedProgram!));
+            qualCutoffValue = max(1, applyProgramSpecificRounding(gradeSpecificQualifierCount * eligibilityThreshold, _selectedProgram!));
             
             final teamIndexInGradeQual = gradeQualifiers.indexWhere((r) => r.teamId == team.id);
             displayQualRank = (teamIndexInGradeQual != -1) ? teamIndexInGradeQual + 1 : -1;
-            isInQualifyingRank = displayQualRank > 0 && displayQualRank <= qualCutoff;
+            isInQualifyingRank = displayQualRank > 0 && displayQualRank <= qualCutoffValue;
 
-            final List<RawSkill> gradeSkills = gradeSkillsRankingsMap[teamGrade]!;
-            skillsCutoffTargetRank = max(1, applyProgramSpecificRounding(gradeSpecificQualifierCount * eligibilityThreshold, _selectedProgram!));
+            skillsCutoffValue = max(1, applyProgramSpecificRounding(gradeSpecificQualifierCount * eligibilityThreshold, _selectedProgram!));
             
-            final teamIndexInGradeSkills = gradeSkills.indexWhere((s) => s.teamId == team.id);
-            displaySkillsRank = (teamIndexInGradeSkills != -1) ? teamIndexInGradeSkills + 1 : -1;
-            isInSkillsRank = displaySkillsRank > 0 && displaySkillsRank <= skillsCutoffTargetRank;
+            final List<Map<String,dynamic>>? gradeSkillsRankList = gradeSkillsRankingsMap[teamGrade];
+            final gradeSkillEntryForTeam = gradeSkillsRankList?.firstWhere((s) => s['teamId'] == team.id, orElse: () => {'rank': -1});
+            displaySkillsRank = gradeSkillEntryForTeam?['rank'] as int? ?? -1;
+
+            isInSkillsRank = displaySkillsRank > 0 && displaySkillsRank <= skillsCutoffValue;
         } else { 
             isInQualifyingRank = false;
             isInSkillsRank = false;
+            qualCutoffValue = -1; // Indicate no applicable cutoff
+            skillsCutoffValue = -1; // Indicate no applicable cutoff
             displayQualRank = overallRankingData.rank > 0 ? overallRankingData.rank : -1;
         }
       }
 
-      final bool hasProg = (skillsData?.programmingScore ?? 0) > 0;
-      final bool hasDriver = (skillsData?.driverScore ?? 0) > 0;
-
       bool isEligible = isInQualifyingRank &&
                         isInSkillsRank &&
-                        (_programRules!.requiresProgrammingSkills ? hasProg : true) &&
-                        (_programRules!.requiresDriverSkills ? hasDriver : true);
+                        (_programRules!.requiresProgrammingSkills ? (teamProgrammingScore > 0) : true) &&
+                        (_programRules!.requiresDriverSkills ? (teamDriverScore > 0) : true);
 
       return TeamSkills(
         team: team,
         qualifierRank: displayQualRank,
         skillsRank: displaySkillsRank,
-        programmingScore: skillsData?.programmingScore ?? 0,
-        driverScore: skillsData?.driverScore ?? 0,
+        programmingScore: teamProgrammingScore,
+        driverScore: teamDriverScore,
+        programmingAttempts: teamProgrammingAttempts,
+        driverAttempts: teamDriverAttempts,
         eligible: isEligible,
         inRank: isInQualifyingRank,
         inSkill: isInSkillsRank,
+        qualifierRankCutoff: qualCutoffValue,   // Pass calculated cutoff
+        skillsRankCutoff: skillsCutoffValue, // Pass calculated cutoff
       );
     }).toList();
   }
@@ -447,6 +495,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   String _formatRank(int rank) => rank < 0 ? 'N/A' : '#$rank';
 
   Widget _buildSummaryWidget(String? gradeLevelContext) {
+    // ... (implementation is the same as previous correct version)
     if (_programRules == null || selectedEvent == null || _selectedProgram == null) return const SizedBox.shrink();
 
     final recordsForSummary = gradeLevelContext == null
@@ -470,7 +519,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
       final grade = gradeLevelContext.toLowerCase();
       final gradeSpecificRankedTeamsInQualifiers = rawRankings.where((r) {
         final teamData = teams.firstWhere((t) => t.id == r.teamId, 
-            orElse: () => Team(id: -1, number: '', name: '', grade: '', organization: '', state: ''));
+            orElse: () => Team(id: -1, number: '', name: '', grade: '', organization: '', state: '', city: '', country: ''));
         return teamData.grade.toLowerCase() == grade && r.rank > 0;
       }).length;
       qualCutoffRankDisplay = max(1, applyProgramSpecificRounding(gradeSpecificRankedTeamsInQualifiers * eligibilityThreshold, _selectedProgram!));
@@ -491,7 +540,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
           children: [
             Text('Qual. Rank Cutoff (Top ${(eligibilityThreshold * 100).toStringAsFixed(0)}% of ${gradeLevelContext ?? ""} teams): ≤#$qualCutoffRankDisplay'.replaceFirst(" qualifier teams", gradeLevelContext !=null ? " $gradeLevelContext qualifier teams" : " qualifier teams"),
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Theme.of(context).colorScheme.secondary)),
-            Text('Skills Rank Cutoff (Top ${(eligibilityThreshold * 100).toStringAsFixed(0)}% of ${gradeLevelContext ?? ""} teams): ≤#$skillsCutoffRankDisplay'.replaceFirst(" qualifier teams", gradeLevelContext !=null ? " $gradeLevelContext qualifier teams" : " qualifier teams"),
+            Text('Skills Rank Cutoff (Top ${(eligibilityThreshold * 100).toStringAsFixed(0)}% of ${gradeLevelContext ?? ""} teams): Achieve Skills Rank ≤#$skillsCutoffRankDisplay'.replaceFirst(" qualifier teams", gradeLevelContext !=null ? " $gradeLevelContext qualifier teams" : " qualifier teams"),
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Theme.of(context).colorScheme.secondary)),
             const SizedBox(height: 8),
             Row(children: [
@@ -512,6 +561,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
       );
 
   Widget _buildSortableHeader(SortableColumn column, String title, int flex, {TextAlign textAlign = TextAlign.left}) {
+    // ... (implementation is the same as previous correct version)
     bool isActiveSortColumn = _sortColumn == column;
     return Expanded(
       flex: flex,
@@ -559,7 +609,10 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   Widget _dataTableHeaders() {
-    bool showGradeColumn = isCombinedDivisionEvent; // Determine if grade column should be shown
+    // ... (implementation is the same as previous correct version)
+    bool showGradeColumn = isCombinedDivisionEvent;
+    int teamFlex = showGradeColumn ? 2 : 3; 
+    int orgFlex = showGradeColumn ? 2 : 3;   
 
     return Container(
       decoration: BoxDecoration(
@@ -567,26 +620,31 @@ class _EligibilityPageState extends State<EligibilityPage> {
           borderRadius: BorderRadius.circular(8.0)),
       padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 0),
       child: Row(children: [
-        _buildSortableHeader(SortableColumn.teamNumber, 'Team (Num & Name)', showGradeColumn ? 2 : 3), // Adjust flex
+        _buildSortableHeader(SortableColumn.teamNumber, 'Team (Num & Name)', teamFlex),
         if (showGradeColumn)
            _buildSortableHeader(SortableColumn.grade, 'Grade', 1, textAlign: TextAlign.center),
-        _buildSortableHeader(SortableColumn.organization, 'Organization', showGradeColumn ? 2 : 3), // Adjust flex
+        _buildSortableHeader(SortableColumn.organization, 'Organization', orgFlex),
         _buildSortableHeader(SortableColumn.state, 'State', 1, textAlign: TextAlign.center),
         _buildSortableHeader(SortableColumn.eligible, 'Eligible?', 1, textAlign: TextAlign.center),
         _buildSortableHeader(SortableColumn.qualifierRank, 'Qual', 1, textAlign: TextAlign.center),
         _buildSortableHeader(SortableColumn.skillsRank, 'Skills', 1, textAlign: TextAlign.center),
         _buildSortableHeader(SortableColumn.driverScore, 'Pilot', 1, textAlign: TextAlign.center),
+        _buildSortableHeader(SortableColumn.pilotAttempts, 'Pilot Attempts', 1, textAlign: TextAlign.center),
         _buildSortableHeader(SortableColumn.programmingScore, 'Auton', 1, textAlign: TextAlign.center),
+        _buildSortableHeader(SortableColumn.autonAttempts, 'Auton Attempts', 1, textAlign: TextAlign.center),
       ]),
     );
   }
 
   Widget _dataRowWidget(TeamSkills record) {
+    // ... (implementation is the same as previous correct version)
     final isEligible = record.eligible;
     final Color rowBgColor = isEligible
         ? Colors.green.withAlpha(40)
         : (record.inRank || record.inSkill ? Colors.orange.withAlpha(30) : Colors.transparent);
     bool showGradeColumn = isCombinedDivisionEvent;
+    int teamFlex = showGradeColumn ? 2 : 3;
+    int orgFlex = showGradeColumn ? 2 : 3;
 
     return Material(
       color: rowBgColor,
@@ -596,7 +654,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
           decoration: BoxDecoration(border: Border(
               bottom: BorderSide(color: Colors.white.withAlpha(25), width: 0.5))),
           child: Row(children: [
-            Expanded(flex: showGradeColumn ? 2 : 3, child: Column( // Adjust flex
+            Expanded(flex: teamFlex, child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _TableDataCell(record.team.number,
@@ -606,7 +664,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
                 ])),
             if (showGradeColumn)
               Expanded(flex: 1, child: _TableDataCell(record.team.grade.isNotEmpty ? record.team.grade : "N/A", textAlign: TextAlign.center)),
-            Expanded(flex: showGradeColumn ? 2 : 3, child: _TableDataCell(record.team.organization, fontSize: 12)), // Adjust flex
+            Expanded(flex: orgFlex, child: _TableDataCell(record.team.organization, fontSize: 12)),
             Expanded(flex: 1, child: _TableDataCell(record.team.state, textAlign: TextAlign.center)),
             Expanded(
               flex: 1, 
@@ -623,13 +681,16 @@ class _EligibilityPageState extends State<EligibilityPage> {
                 color: record.inSkill ? Colors.lightGreenAccent.shade100 : Colors.orangeAccent.shade100,
                 textAlign: TextAlign.center)),
             Expanded(flex: 1, child: _TableDataCell(record.driverScore.toString(), textAlign: TextAlign.center)),
+            Expanded(flex: 1, child: _TableDataCell(record.driverAttempts.toString(), textAlign: TextAlign.center)), 
             Expanded(flex: 1, child: _TableDataCell(record.programmingScore.toString(), textAlign: TextAlign.center)),
+            Expanded(flex: 1, child: _TableDataCell(record.programmingAttempts.toString(), textAlign: TextAlign.center)), 
           ]),
         ),
       ),
     );
   }
   
+  // THIS METHOD WAS MISSING IN THE PREVIOUS RESPONSE - RE-INSERTING IT
   Widget _buildTableForRecordsList(List<TeamSkills> recordsList) {
     if (recordsList.isEmpty) {
       return const Padding(
@@ -641,13 +702,108 @@ class _EligibilityPageState extends State<EligibilityPage> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10.0)),
       clipBehavior: Clip.antiAlias,
       child: Column(children: [
-        _dataTableHeaders(),
-        ListView.builder(
+        _dataTableHeaders(), // This calls the header builder
+        ListView.builder( // This builds the rows
           shrinkWrap: true, physics: const NeverScrollableScrollPhysics(),
           itemCount: recordsList.length,
           itemBuilder: (ctx, i) => _dataRowWidget(recordsList[i]),
         ),
       ]),
+    );
+  }
+
+  Widget _buildPageContent(List<TeamSkills> processedRecords, {required bool isSearchFilterActive}) {
+    // Split records for mobile view
+    final List<TeamSkills> eligibleForMobile = processedRecords.where((r) => r.eligible).toList();
+    final List<TeamSkills> ineligibleForMobile = processedRecords.where((r) => !r.eligible).toList();
+
+    // Desktop view still uses its own msTeams, hsTeams, otherTeams logic for sections
+    List<TeamSkills> msTeamsDesktop = [], hsTeamsDesktop = [], otherTeamsDesktop = [];
+    if (!isCombinedDivisionEvent) { 
+      msTeamsDesktop = processedRecords.where((r) => r.team.grade.toLowerCase() == 'middle school').toList();
+      hsTeamsDesktop = processedRecords.where((r) => r.team.grade.toLowerCase() == 'high school' || (r.team.grade.isNotEmpty && r.team.grade.toLowerCase() != 'middle school')).toList();
+      otherTeamsDesktop = processedRecords.where((r) => r.team.grade.isEmpty).toList();
+    } else {
+      otherTeamsDesktop = processedRecords;
+    }
+
+    if (_isMobileViewEnabled) {
+      // Basic error/empty states for mobile
+      if (selectedEvent != null && !loading && teams.isEmpty && (error == null || !error!.toLowerCase().contains("team"))) {
+        return Center(child: Padding(padding: const EdgeInsets.all(24.0),
+            child: Text('No teams data found for event: ${selectedEvent?.name ?? ""}.', textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge)));
+      }
+      if (selectedEvent != null && !loading && processedRecords.isEmpty && (isSearchFilterActive || hideNoData) && teams.isNotEmpty) {
+        return Center(child: Padding(padding: const EdgeInsets.all(24.0),
+            child: Text('No teams match current filters.', textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge)));
+      }
+       if (selectedEvent == null && !loading && events.isEmpty){
+         return Center(child: Padding(padding: const EdgeInsets.all(24.0),
+                      child: Text('No recent events found for ${_selectedProgram?.name} in season ${_selectedSeason?.name}.\nTry loading an event by its SKU.',
+                          textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge)));
+       }
+       if (selectedEvent == null && !loading && events.isNotEmpty){
+         return Center(child: Padding(padding: const EdgeInsets.all(24.0),
+                      child: Text('Please select an event or load by SKU.',
+                          textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge)));
+       }
+      
+      return MobileEligibilityView(
+        eligibleRecords: eligibleForMobile,
+        ineligibleRecords: ineligibleForMobile,
+        selectedProgram: _selectedProgram,
+        programRules: _programRules, records: [], // Pass programRules
+      );
+    }
+
+    // --- Desktop Table View (uses msTeamsDesktop, hsTeamsDesktop, otherTeamsDesktop) ---
+    return Column( 
+      children: [
+        // ... (desktop error and no data messages remain the same, using processedRecords for its isEmpty check)
+        if (error != null && selectedEvent != null)
+          Padding(padding: const EdgeInsets.symmetric(vertical: 10.0),
+              child: Card(color: Colors.redAccent.withAlpha(150),
+                  child: Padding(padding: const EdgeInsets.all(10.0),
+                      child: Text("Error: $error", style: const TextStyle(color: Colors.white))))),
+        if (selectedEvent == null && !loading && events.isEmpty)
+          Center(child: Padding(padding: const EdgeInsets.all(24.0),
+              child: Text('No recent events found for ${_selectedProgram?.name} in season ${_selectedSeason?.name}.\nTry loading an event by its SKU.',
+                  textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge))),
+        // ... (other desktop placeholders) ...
+        if (selectedEvent != null && !loading && teams.isEmpty && (error == null || !error!.toLowerCase().contains("team")))
+          Center(child: Padding(padding: const EdgeInsets.all(24.0),
+              child: Text('No teams data found for event: ${selectedEvent?.name ?? ""}. The event might be in the future or data is not yet available.',
+                  textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge))),
+        if (selectedEvent != null && !loading && processedRecords.isEmpty && (isSearchFilterActive || hideNoData) && teams.isNotEmpty)
+          Center(child: Padding(padding: const EdgeInsets.all(24.0),
+              child: Text('No teams match current filters.',
+                  textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge))),
+        
+        if (selectedEvent != null && !loading && (teams.isNotEmpty || (error != null && error!.toLowerCase().contains("team")))) ...[
+          if (isCombinedDivisionEvent) ...[
+            _tableSectionTitle('All Teams (${otherTeamsDesktop.length})'),
+            _buildSummaryWidget(null),
+            _buildTableForRecordsList(otherTeamsDesktop),
+          ] else ...[
+            // Desktop still shows potentially empty sections if no filters active
+            if (msTeamsDesktop.isNotEmpty || (otherTeamsDesktop.isEmpty && hsTeamsDesktop.isEmpty && !isSearchFilterActive && !hideNoData && processedRecords.any((r)=>r.team.grade.toLowerCase()=='middle school'))) ...[
+              _tableSectionTitle('Middle School Teams (${msTeamsDesktop.length})'),
+              _buildSummaryWidget('Middle School'),
+              _buildTableForRecordsList(msTeamsDesktop),
+            ],
+            if (hsTeamsDesktop.isNotEmpty || (otherTeamsDesktop.isEmpty && msTeamsDesktop.isEmpty && !isSearchFilterActive && !hideNoData && processedRecords.any((r)=>r.team.grade.toLowerCase()=='high school'))) ...[
+              _tableSectionTitle('High School / Other Teams (${hsTeamsDesktop.length})'),
+               _buildSummaryWidget('High School'),
+              _buildTableForRecordsList(hsTeamsDesktop),
+            ],
+             if (otherTeamsDesktop.isNotEmpty && !isCombinedDivisionEvent) ...[
+              _tableSectionTitle('Uncategorized / Grade Not Specified (${otherTeamsDesktop.length})'),
+               _buildSummaryWidget(null), 
+              _buildTableForRecordsList(otherTeamsDesktop),
+            ],
+          ]
+        ]
+      ],
     );
   }
 
@@ -669,14 +825,16 @@ class _EligibilityPageState extends State<EligibilityPage> {
       );
     }
     
-    List<TeamSkills> processedRecords = tableRecords;
+    List<TeamSkills> processedRecords = tableRecords; 
     
-    final String searchTerm = searchCtrl.text.toLowerCase();
-    if (searchTerm.isNotEmpty) {
+    final String searchTermText = searchCtrl.text.toLowerCase();
+    final bool isSearchActive = searchTermText.isNotEmpty;
+
+    if (isSearchActive) {
       processedRecords = processedRecords.where((rec) =>
-          rec.team.number.toLowerCase().contains(searchTerm) ||
-          rec.team.name.toLowerCase().contains(searchTerm) ||
-          rec.team.organization.toLowerCase().contains(searchTerm)).toList();
+          rec.team.number.toLowerCase().contains(searchTermText) ||
+          rec.team.name.toLowerCase().contains(searchTermText) ||
+          rec.team.organization.toLowerCase().contains(searchTermText)).toList();
     }
     if (hideNoData) {
       processedRecords = processedRecords.where((r) =>
@@ -690,7 +848,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
           case SortableColumn.teamNumber:
             compareResult = a.team.number.compareTo(b.team.number);
             break;
-          case SortableColumn.grade: // Added sort case for Grade
+          case SortableColumn.grade:
             compareResult = a.team.grade.compareTo(b.team.grade);
             break;
           case SortableColumn.organization:
@@ -717,13 +875,19 @@ class _EligibilityPageState extends State<EligibilityPage> {
           case SortableColumn.driverScore:
             compareResult = a.driverScore.compareTo(b.driverScore);
             break;
+          case SortableColumn.pilotAttempts:
+            compareResult = a.driverAttempts.compareTo(b.driverAttempts);
+            break;
           case SortableColumn.programmingScore:
             compareResult = a.programmingScore.compareTo(b.programmingScore);
+            break;
+          case SortableColumn.autonAttempts:
+            compareResult = a.programmingAttempts.compareTo(b.programmingAttempts);
             break;
         }
         return _sortAscending ? compareResult : -compareResult;
       });
-    } else {
+    } else { // Default sort
       processedRecords.sort((a, b) {
         if (a.eligible != b.eligible) return a.eligible ? -1 : 1;
         if (a.qualifierRank > 0 && b.qualifierRank > 0) return a.qualifierRank.compareTo(b.qualifierRank);
@@ -733,15 +897,90 @@ class _EligibilityPageState extends State<EligibilityPage> {
       });
     }
 
-    List<TeamSkills> msTeams = [], hsTeams = [], otherTeams = [];
-    // Use the getter isCombinedDivisionEvent to determine list population
-    if (!isCombinedDivisionEvent) { 
-      msTeams = processedRecords.where((r) => r.team.grade.toLowerCase() == 'middle school').toList();
-      hsTeams = processedRecords.where((r) => r.team.grade.toLowerCase() == 'high school' || (r.team.grade.isNotEmpty && r.team.grade.toLowerCase() != 'middle school')).toList();
-      otherTeams = processedRecords.where((r) => r.team.grade.isEmpty).toList();
-    } else {
-      otherTeams = processedRecords; // For combined events, all go into otherTeams for single table display
-    }
+    Widget formControls = Form( 
+        key: _formKey,
+        child: Column(children: [
+          Row(children: [
+            Expanded(child: TextFormField(
+                controller: skuCtrl,
+                decoration: InputDecoration(
+                    labelText: 'Event SKU (e.g., ${_selectedProgram?.skuPrefix ?? ""}XX-XXXX)',
+                    hintText: 'Enter SKU and press Load',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
+                    prefixIcon: const Icon(Icons.qr_code_scanner, color: Colors.blueAccent),
+                    isDense: true),
+                validator: (value) => null, 
+                onFieldSubmitted: (_) => _loadSku(),
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurface))),
+            const SizedBox(width: 8),
+            ElevatedButton.icon(
+                onPressed: _loadSku, icon: const Icon(Icons.search), label: const Text('Load'),
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.secondary,
+                    foregroundColor: Theme.of(context).colorScheme.onSecondary,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10.0)))),
+          ]),
+          const SizedBox(height: 12),
+          Row(children: [
+            Expanded(child: DropdownButtonFormField<EventInfo>(
+                decoration: InputDecoration(
+                    labelText: 'Or Select Recent Event (${_selectedSeason?.name ?? ""})',
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
+                    prefixIcon: const Icon(Icons.event, color: Colors.blueAccent),
+                    isDense: true),
+                isExpanded: true, value: selectedEvent,
+                dropdownColor: Theme.of(context).colorScheme.surface,
+                items: events.map((e) {
+                  final dateLabel = '${e.start.month}/${e.start.day}/${e.start.year}';
+                  return DropdownMenuItem(value: e, child: Text('${e.sku} – ${e.name} ($dateLabel)', overflow: TextOverflow.ellipsis));
+                }).toList(),
+                onChanged: (e) async {
+                  if (e != null) {
+                    if (!mounted) return;
+                    setState(() { selectedEvent = e; skuCtrl.text = e.sku; });
+                    await _loadAllDataForEvent(e.id);
+                  }
+                },
+                style: TextStyle(color: Theme.of(context).colorScheme.onSurface))),
+            if (divisions.length > 1) ...[
+              const SizedBox(width: 12),
+              Expanded(flex: 0, child: DropdownButtonFormField<Division>(
+                  decoration: InputDecoration(labelText: 'Division',
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)), isDense: true),
+                  value: selectedDivision, dropdownColor: Theme.of(context).colorScheme.surface,
+                  items: divisions.map((d) => DropdownMenuItem(value: d, child: Text(d.name))).toList(),
+                  onChanged: (d) async {
+                    if (d != null && selectedEvent != null) {
+                      if (!mounted) return;
+                      setState(() => selectedDivision = d);
+                      await _loadAllDataForEvent(selectedEvent!.id);
+                    }
+                  },
+                  style: TextStyle(color: Theme.of(context).colorScheme.onSurface))),
+            ]
+          ]),
+          const SizedBox(height: 12),
+          TextFormField(
+              controller: searchCtrl,
+              decoration: InputDecoration(
+                  labelText: 'Filter by Team #, Name, or Org…',
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
+                  prefixIcon: const Icon(Icons.filter_alt_outlined, color: Colors.blueAccent),
+                  isDense: true,
+                  suffixIcon: searchCtrl.text.isNotEmpty
+                      ? IconButton(icon: const Icon(Icons.clear), onPressed: () { if(mounted) setState(() { searchCtrl.clear(); }); })
+                      : null),
+              onChanged: (_) { if(mounted) setState(() {}); },
+              style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
+          const SizedBox(height: 8),
+          SwitchListTile(
+              title: const Text("Hide teams with no ranking/skills data", style: TextStyle(fontSize: 13)),
+              value: hideNoData, onChanged: (v) { if(mounted) setState(() => hideNoData = v); },
+              activeColor: Theme.of(context).colorScheme.secondary, dense: true, contentPadding: EdgeInsets.zero),
+          const SizedBox(height: 16),
+        ]),
+    );
 
     return KeyboardListener(
       focusNode: _keyFocusNode,
@@ -778,134 +1017,12 @@ class _EligibilityPageState extends State<EligibilityPage> {
               ]),
             SliverPadding(
               padding: const EdgeInsets.all(12.0),
-              sliver: SliverList(delegate: SliverChildListDelegate([
-                Form(key: _formKey, child: Column(children: [
-                  Row(children: [
-                    Expanded(child: TextFormField(
-                        controller: skuCtrl,
-                        decoration: InputDecoration(
-                            labelText: 'Event SKU (e.g., ${_selectedProgram?.skuPrefix ?? ""}XX-XXXX)',
-                            hintText: 'Enter SKU and press Load',
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
-                            prefixIcon: const Icon(Icons.qr_code_scanner, color: Colors.blueAccent),
-                            isDense: true),
-                        validator: (value) => null, 
-                        onFieldSubmitted: (_) => _loadSku(),
-                        style: TextStyle(color: Theme.of(context).colorScheme.onSurface))),
-                    const SizedBox(width: 8),
-                    ElevatedButton.icon(
-                        onPressed: _loadSku, icon: const Icon(Icons.search), label: const Text('Load'),
-                        style: ElevatedButton.styleFrom(
-                            backgroundColor: Theme.of(context).colorScheme.secondary,
-                            foregroundColor: Theme.of(context).colorScheme.onSecondary,
-                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10.0)))),
-                  ]),
-                  const SizedBox(height: 12),
-                  Row(children: [
-                    Expanded(child: DropdownButtonFormField<EventInfo>(
-                        decoration: InputDecoration(
-                            labelText: 'Or Select Recent Event (${_selectedSeason?.name ?? ""})',
-                            border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
-                            prefixIcon: const Icon(Icons.event, color: Colors.blueAccent),
-                            isDense: true),
-                        isExpanded: true, value: selectedEvent,
-                        dropdownColor: Theme.of(context).colorScheme.surface,
-                        items: events.map((e) {
-                          final dateLabel = '${e.start.month}/${e.start.day}/${e.start.year}';
-                          return DropdownMenuItem(value: e, child: Text('${e.sku} – ${e.name} ($dateLabel)', overflow: TextOverflow.ellipsis));
-                        }).toList(),
-                        onChanged: (e) async {
-                          if (e != null) {
-                            if (!mounted) return;
-                            setState(() { selectedEvent = e; skuCtrl.text = e.sku; });
-                            await _loadAllDataForEvent(e.id);
-                          }
-                        },
-                        style: TextStyle(color: Theme.of(context).colorScheme.onSurface))),
-                    if (divisions.length > 1) ...[
-                      const SizedBox(width: 12),
-                      Expanded(flex: 0, child: DropdownButtonFormField<Division>(
-                          decoration: InputDecoration(labelText: 'Division',
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)), isDense: true),
-                          value: selectedDivision, dropdownColor: Theme.of(context).colorScheme.surface,
-                          items: divisions.map((d) => DropdownMenuItem(value: d, child: Text(d.name))).toList(),
-                          onChanged: (d) async {
-                            if (d != null && selectedEvent != null) {
-                              if (!mounted) return;
-                              setState(() => selectedDivision = d);
-                              await _loadAllDataForEvent(selectedEvent!.id);
-                            }
-                          },
-                          style: TextStyle(color: Theme.of(context).colorScheme.onSurface))),
-                    ]
-                  ]),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                      controller: searchCtrl,
-                      decoration: InputDecoration(
-                          labelText: 'Filter by Team #, Name, or Org…',
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
-                          prefixIcon: const Icon(Icons.filter_alt_outlined, color: Colors.blueAccent),
-                          isDense: true,
-                          suffixIcon: searchCtrl.text.isNotEmpty
-                              ? IconButton(icon: const Icon(Icons.clear), onPressed: () { if(mounted) setState(() { searchCtrl.clear(); }); })
-                              : null),
-                      onChanged: (_) { if(mounted) setState(() {}); },
-                      style: TextStyle(color: Theme.of(context).colorScheme.onSurface)),
-                  const SizedBox(height: 8),
-                  SwitchListTile(
-                      title: const Text("Hide teams with no ranking/skills data", style: TextStyle(fontSize: 13)),
-                      value: hideNoData, onChanged: (v) { if(mounted) setState(() => hideNoData = v); },
-                      activeColor: Theme.of(context).colorScheme.secondary, dense: true, contentPadding: EdgeInsets.zero),
-                  const SizedBox(height: 16),
-                ])),
-                if (error != null && selectedEvent != null)
-                  Padding(padding: const EdgeInsets.symmetric(vertical: 10.0),
-                      child: Card(color: Colors.redAccent.withAlpha(150),
-                          child: Padding(padding: const EdgeInsets.all(10.0),
-                              child: Text("Error: $error", style: const TextStyle(color: Colors.white))))),
-                if (selectedEvent == null && !loading && events.isEmpty)
-                  Center(child: Padding(padding: const EdgeInsets.all(24.0),
-                      child: Text('No recent events found for ${_selectedProgram?.name} in season ${_selectedSeason?.name}.\nTry loading an event by its SKU.',
-                          textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge))),
-                if (selectedEvent == null && !loading && events.isNotEmpty)
-                  Center(child: Padding(padding: const EdgeInsets.all(24.0),
-                      child: Text('Please select an event or load by SKU.',
-                          textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge))),
-                if (selectedEvent != null && !loading && teams.isEmpty && (error == null || !error!.toLowerCase().contains("team")))
-                  Center(child: Padding(padding: const EdgeInsets.all(24.0),
-                      child: Text('No teams data found for event: ${selectedEvent?.name ?? ""}. The event might be in the future or data is not yet available.',
-                          textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge))),
-                if (selectedEvent != null && !loading && processedRecords.isEmpty && (searchCtrl.text.isNotEmpty || hideNoData) && teams.isNotEmpty)
-                  Center(child: Padding(padding: const EdgeInsets.all(24.0),
-                      child: Text('No teams match current filters.',
-                          textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodyLarge))),
-                
-                if (selectedEvent != null && !loading && (teams.isNotEmpty || (error != null && error!.toLowerCase().contains("team")))) ...[
-                  if (isCombinedDivisionEvent) ...[
-                    _tableSectionTitle('All Teams (${otherTeams.length})'),
-                    _buildSummaryWidget(null),
-                    _buildTableForRecordsList(otherTeams),
-                  ] else ...[
-                    if (msTeams.isNotEmpty || (otherTeams.isEmpty && hsTeams.isEmpty && searchTerm.isEmpty && !hideNoData && processedRecords.any((r)=>r.team.grade.toLowerCase()=='middle school'))) ...[
-                      _tableSectionTitle('Middle School Teams (${msTeams.length})'),
-                      _buildSummaryWidget('Middle School'),
-                      _buildTableForRecordsList(msTeams),
-                    ],
-                    if (hsTeams.isNotEmpty || (otherTeams.isEmpty && msTeams.isEmpty && searchTerm.isEmpty && !hideNoData && processedRecords.any((r)=>r.team.grade.toLowerCase()=='high school'))) ...[
-                      _tableSectionTitle('High School / Other Teams (${hsTeams.length})'),
-                       _buildSummaryWidget('High School'),
-                      _buildTableForRecordsList(hsTeams),
-                    ],
-                     if (otherTeams.isNotEmpty && !isCombinedDivisionEvent) ...[
-                      _tableSectionTitle('Uncategorized / Grade Not Specified (${otherTeams.length})'),
-                       _buildSummaryWidget(null), 
-                      _buildTableForRecordsList(otherTeams),
-                    ],
-                  ]
-                ]
-              ])),
+              sliver: SliverList(
+                delegate: SliverChildListDelegate([
+                  formControls, 
+                  _buildPageContent(processedRecords, isSearchFilterActive: isSearchActive),
+                ]),
+              ),
             ),
           ]),
           if (loading && (_selectedProgram != null && _selectedSeason != null))
@@ -923,10 +1040,12 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   Future<void> _showSettingsDialog() async {
+    // ... (implementation is the same as previous correct version, including Mobile View toggle) ...
     RobotProgram? tempSelectedProgram = _selectedProgram;
     Season? tempSelectedSeason = _selectedSeason;
     List<Season> tempAvailableSeasons = List.from(_availableSeasons);
     bool tempAutoReloadEnabled = _isAutoReloadEnabled;
+    bool tempMobileViewEnabled = _isMobileViewEnabled; 
     bool dialogIsLoading = false;
 
     if (!mounted) return;
@@ -1000,6 +1119,17 @@ class _EligibilityPageState extends State<EligibilityPage> {
                         dense: true,
                         contentPadding: EdgeInsets.zero,
                       ),
+                      SwitchListTile(
+                        title: const Text('Enable Mobile View'),
+                        value: tempMobileViewEnabled,
+                        onChanged: (bool value) {
+                          setStateDialog(() {
+                            tempMobileViewEnabled = value;
+                          });
+                        },
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                      ),
                     ]),
             ),
             actions: [
@@ -1022,9 +1152,11 @@ class _EligibilityPageState extends State<EligibilityPage> {
                           await prefs.setInt('selectedProgramId', tempSelectedProgram!.id);
                           await prefs.setInt('selectedSeasonId', tempSelectedSeason!.id);
                           await prefs.setBool(_autoReloadPrefKey, tempAutoReloadEnabled);
+                          await prefs.setBool(_mobileViewPrefKey, tempMobileViewEnabled);
 
                           bool needsEventReload = _selectedProgram != tempSelectedProgram || _selectedSeason != tempSelectedSeason;
                           bool autoReloadChanged = _isAutoReloadEnabled != tempAutoReloadEnabled;
+                          bool mobileViewChanged = _isMobileViewEnabled != tempMobileViewEnabled;
                           
                           if (!mounted) return;
                           setState(() { 
@@ -1033,6 +1165,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
                             _selectedSeason = tempSelectedSeason;
                             _availableSeasons = tempAvailableSeasons;
                             _isAutoReloadEnabled = tempAutoReloadEnabled;
+                            _isMobileViewEnabled = tempMobileViewEnabled; 
                             api = RobotEventsApiService(program: _selectedProgram!, season: _selectedSeason!);
                             if (needsEventReload) { _clearEventData(resetSort: true); events = []; skuCtrl.clear(); searchCtrl.clear(); selectedEvent=null; }
                           });
@@ -1040,8 +1173,9 @@ class _EligibilityPageState extends State<EligibilityPage> {
                           
                           if (needsEventReload) {
                             await _loadEvents();
-                          } else if (autoReloadChanged) {
-                            _manageAutoReloadTimer();
+                          } else if (autoReloadChanged || mobileViewChanged) { 
+                            _manageAutoReloadTimer(); 
+                            if(mobileViewChanged && mounted) setState((){}); 
                           }
                         }
                       : null,
@@ -1055,6 +1189,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
 }
 
 class _TableDataCell extends StatelessWidget {
+  // ... (implementation is the same as previous correct version)
   final String text;
   final Color? color;
   final bool isBold;

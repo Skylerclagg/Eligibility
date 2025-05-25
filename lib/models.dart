@@ -1,26 +1,22 @@
 
-
 // --- Rounding Helper Functions ---
-// Standard round half up (for positive numbers, Dart's .round() does this)
 int roundHalfUp(double value) {
   return value.round();
 }
 
-// Banker's rounding / round half to even (for non-negative values)
 int roundHalfToEven(double value) {
   assert(value >= 0, "This rounding function is intended for non-negative cutoff values.");
   double fraction = value - value.floor();
   if (fraction == 0.5) {
     if (value.floor().isEven) {
-      return value.floor(); // e.g., 2.5 -> 2
+      return value.floor();
     } else {
-      return value.ceil();  // e.g., 3.5 -> 4
+      return value.ceil();
     }
   }
-  return value.round(); // Standard rounding for other fractions
+  return value.round();
 }
 
-// Applies the correct rounding based on the program
 int applyProgramSpecificRounding(double calculatedValue, RobotProgram program) {
   if (program == RobotProgram.adc) {
     return roundHalfToEven(calculatedValue);
@@ -31,10 +27,10 @@ int applyProgramSpecificRounding(double calculatedValue, RobotProgram program) {
 // --- End Rounding Helper Functions ---
 
 enum RobotProgram {
-  v5rc(id: 1, name: 'V5RC - VEX Robotics Competition', skuPrefix: 'RE-V5RC-', awardName: 'Excellence Award'),
-  viqrc(id: 41, name: 'VIQRC - VEX IQ Robotics Competition', skuPrefix: 'RE-VIQRC-', awardName: 'Excellence Award'),
-  vurc(id: 4, name: 'VURC - VEX U Robotics Competition', skuPrefix: 'RE-VURC-', awardName: 'Excellence Award'),
-  adc(id: 44, name: 'ADC - Aerial Drone Competition', skuPrefix: 'RE-ADC-', awardName: 'All-Around Champion');
+  v5rc(id: 1, name: 'V5RC', skuPrefix: 'RE-V5RC-', awardName: 'Excellence Award'),
+  viqrc(id: 41, name: 'VIQRC', skuPrefix: 'RE-VIQRC-', awardName: 'Excellence Award'),
+  vurc(id: 4, name: 'VURC', skuPrefix: 'RE-VURC-', awardName: 'Excellence Award'),
+  adc(id: 44, name: 'ADC', skuPrefix: 'RE-ADC-', awardName: 'All-Around Champion');
 
   final int id;
   final String name;
@@ -169,7 +165,9 @@ class Team {
   final String name;
   final String grade;
   final String organization;
-  final String state;
+  final String city;     // Added
+  final String state;    // 'state' here is 'region' from API
+  final String country;  // Added
 
   Team({
     required this.id,
@@ -177,39 +175,52 @@ class Team {
     required this.name,
     required this.grade,
     required this.organization,
+    required this.city,     // Added
     required this.state,
+    required this.country,  // Added
   });
 
-  factory Team.fromJson(Map<String, dynamic> j) => Team(
-        id: j['id'] as int,
-        number: j['number'] as String? ?? '',
-        name: j['team_name'] as String? ?? '',
-        grade: j['grade'] as String? ?? '',
-        organization: j['organization'] as String? ?? '',
-        state: (j['location'] as Map<String, dynamic>?)?['region'] as String? ?? '',
-      );
+  factory Team.fromJson(Map<String, dynamic> j) {
+    final location = j['location'] as Map<String, dynamic>?;
+    return Team(
+      id: j['id'] as int,
+      number: j['number'] as String? ?? '',
+      name: j['team_name'] as String? ?? j['name'] as String? ?? '', // 'name' is sometimes used for team name in some API responses
+      grade: j['grade'] as String? ?? '',
+      organization: j['organization'] as String? ?? '',
+      city: location?['city'] as String? ?? '',         // Added
+      state: location?['region'] as String? ?? '',      // This was 'region'
+      country: location?['country'] as String? ?? '',   // Added
+    );
+  }
 }
 
 class RawSkill {
   final int teamId;
+  final String type; // 'programming' or 'driver'
   final int rank;
-  final int programmingScore;
-  final int driverScore;
+  final int score;
+  final int attempts; // Added attempts
+
   RawSkill({
     required this.teamId,
+    required this.type,
     required this.rank,
-    required this.programmingScore,
-    required this.driverScore,
+    required this.score,
+    required this.attempts, // Added attempts
   });
+
+  // Convenience getters (optional, but can simplify usage if RawSkill objects are directly used)
+  int get programmingScore => type == 'programming' ? score : 0;
+  int get driverScore => type == 'driver' ? score : 0;
+
   factory RawSkill.fromJson(Map<String, dynamic> j) {
-    final tid = (j['team'] as Map<String, dynamic>)['id'] as int;
-    final type = j['type'] as String? ?? '';
-    final score = (j['score'] as int?) ?? 0;
     return RawSkill(
-      teamId: tid,
+      teamId: (j['team'] as Map<String, dynamic>)['id'] as int,
+      type: j['type'] as String? ?? '',
       rank: (j['rank'] as int?) ?? -1,
-      programmingScore: type == 'programming' ? score : 0,
-      driverScore: type == 'driver' ? score : 0,
+      score: (j['score'] as int?) ?? 0,
+      attempts: (j['attempts'] as int?) ?? 0, // Parse attempts
     );
   }
 }
@@ -227,17 +238,26 @@ class TeamSkills {
   final int skillsRank;
   final int programmingScore;
   final int driverScore;
+  final int programmingAttempts;
+  final int driverAttempts;    
   final bool eligible;
   final bool inRank;
   final bool inSkill;
+  final int qualifierRankCutoff; // New
+  final int skillsRankCutoff;   // New
+
   TeamSkills({
     required this.team,
     required this.qualifierRank,
     required this.skillsRank,
     required this.programmingScore,
     required this.driverScore,
+    required this.programmingAttempts,
+    required this.driverAttempts,    
     required this.eligible,
     required this.inRank,
     required this.inSkill,
+    required this.qualifierRankCutoff, // New
+    required this.skillsRankCutoff,   // New
   });
 }
