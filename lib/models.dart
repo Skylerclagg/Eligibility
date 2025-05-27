@@ -1,5 +1,6 @@
+import 'dart:math';
 
-// --- Rounding Helper Functions ---
+// --- Rounding Helper Functions --- (remain the same)
 int roundHalfUp(double value) {
   return value.round();
 }
@@ -26,7 +27,7 @@ int applyProgramSpecificRounding(double calculatedValue, RobotProgram program) {
 }
 // --- End Rounding Helper Functions ---
 
-enum RobotProgram {
+enum RobotProgram { 
   v5rc(id: 1, name: 'V5RC', skuPrefix: 'RE-V5RC-', awardName: 'Excellence Award'),
   viqrc(id: 41, name: 'VIQRC', skuPrefix: 'RE-VIQRC-', awardName: 'Excellence Award'),
   vurc(id: 4, name: 'VURC', skuPrefix: 'RE-VURC-', awardName: 'Excellence Award'),
@@ -46,53 +47,66 @@ enum RobotProgram {
 }
 
 class ProgramRules {
-  final double threshold;
+  final double threshold; 
   final bool requiresDriverSkills;
-  final bool requiresProgrammingSkills;
+  final bool requiresProgrammingSkills; 
   final bool hasMiddleSchoolHighSchoolDivisions;
+
+  final bool requiresRankInPositiveProgrammingSkills; 
+  final double programmingSkillsRankThreshold; 
 
   const ProgramRules({
     this.threshold = 0.5,
     this.requiresDriverSkills = true,
-    this.requiresProgrammingSkills = true,
+    this.requiresProgrammingSkills = true, 
     this.hasMiddleSchoolHighSchoolDivisions = false,
+    this.requiresRankInPositiveProgrammingSkills = false, 
+    this.programmingSkillsRankThreshold = 0.4,      
   });
 
   factory ProgramRules.forProgram(RobotProgram program) {
     switch (program) {
       case RobotProgram.v5rc:
         return const ProgramRules(
-          threshold: 0.4,
+          threshold: 0.40, // Assuming main threshold is now 40%
           requiresDriverSkills: true,
-          requiresProgrammingSkills: true,
+          requiresProgrammingSkills: true, // Still need a prog score (e.g. > 0 for skills)
           hasMiddleSchoolHighSchoolDivisions: true,
+          requiresRankInPositiveProgrammingSkills: true, 
+          programmingSkillsRankThreshold: 0.40,        
         );
       case RobotProgram.viqrc:
         return const ProgramRules(
-          threshold: 0.4,
+          threshold: 0.40, // Assuming main threshold is now 40%
           requiresDriverSkills: true,
           requiresProgrammingSkills: true,
           hasMiddleSchoolHighSchoolDivisions: true,
+          requiresRankInPositiveProgrammingSkills: true, 
+          programmingSkillsRankThreshold: 0.40,        
         );
       case RobotProgram.vurc:
         return const ProgramRules(
-          threshold: 0.4,
+          threshold: 0.40, // Assuming main threshold is now 40%
           requiresDriverSkills: true,
           requiresProgrammingSkills: true,
           hasMiddleSchoolHighSchoolDivisions: false,
+          requiresRankInPositiveProgrammingSkills: true, 
+          programmingSkillsRankThreshold: 0.40,        
         );
       case RobotProgram.adc:
         return const ProgramRules(
-          threshold: 0.5,
-          requiresDriverSkills: true,
-          requiresProgrammingSkills: true,
-          hasMiddleSchoolHighSchoolDivisions: true,
+          threshold: 0.50, 
+          requiresDriverSkills: false, 
+          requiresProgrammingSkills: true, 
+          hasMiddleSchoolHighSchoolDivisions: false,
+          requiresRankInPositiveProgrammingSkills: false, // ADC does not use this new specific rule
+          programmingSkillsRankThreshold: 0.4, // Default, but unused if above is false
         );
     }
   }
 }
 
-class Season {
+class Season { /* ... remains the same ... */ 
   final int id;
   final String name;
   final String programName;
@@ -111,7 +125,7 @@ class Season {
   int get hashCode => id.hashCode;
 }
 
-class Ranking {
+class Ranking { /* ... remains the same ... */ 
   final int teamId;
   final int rank;
 
@@ -123,7 +137,7 @@ class Ranking {
       );
 }
 
-class EventInfo {
+class EventInfo { /* ... remains the same ... */
   final int id;
   final String sku;
   final String name;
@@ -149,7 +163,7 @@ class EventInfo {
   int get hashCode => id.hashCode;
 }
 
-class Division {
+class Division { /* ... remains the same ... */
   final int id;
   final String name;
   Division({required this.id, required this.name});
@@ -159,15 +173,15 @@ class Division {
       );
 }
 
-class Team {
+class Team { /* ... remains the same with city, state, country ... */
   final int id;
   final String number;
   final String name;
   final String grade;
   final String organization;
-  final String city;     // Added
-  final String state;    // 'state' here is 'region' from API
-  final String country;  // Added
+  final String city;
+  final String state; 
+  final String country;
 
   Team({
     required this.id,
@@ -175,9 +189,9 @@ class Team {
     required this.name,
     required this.grade,
     required this.organization,
-    required this.city,     // Added
+    required this.city,
     required this.state,
-    required this.country,  // Added
+    required this.country,
   });
 
   factory Team.fromJson(Map<String, dynamic> j) {
@@ -185,32 +199,31 @@ class Team {
     return Team(
       id: j['id'] as int,
       number: j['number'] as String? ?? '',
-      name: j['team_name'] as String? ?? j['name'] as String? ?? '', // 'name' is sometimes used for team name in some API responses
+      name: j['team_name'] as String? ?? j['name'] as String? ?? '',
       grade: j['grade'] as String? ?? '',
       organization: j['organization'] as String? ?? '',
-      city: location?['city'] as String? ?? '',         // Added
-      state: location?['region'] as String? ?? '',      // This was 'region'
-      country: location?['country'] as String? ?? '',   // Added
+      city: location?['city'] as String? ?? '',
+      state: location?['region'] as String? ?? '',
+      country: location?['country'] as String? ?? '',
     );
   }
 }
 
-class RawSkill {
+class RawSkill { /* ... remains the same, includes attempts ... */
   final int teamId;
-  final String type; // 'programming' or 'driver'
+  final String type; 
   final int rank;
   final int score;
-  final int attempts; // Added attempts
+  final int attempts; 
 
   RawSkill({
     required this.teamId,
     required this.type,
     required this.rank,
     required this.score,
-    required this.attempts, // Added attempts
+    required this.attempts, 
   });
 
-  // Convenience getters (optional, but can simplify usage if RawSkill objects are directly used)
   int get programmingScore => type == 'programming' ? score : 0;
   int get driverScore => type == 'driver' ? score : 0;
 
@@ -220,12 +233,12 @@ class RawSkill {
       type: j['type'] as String? ?? '',
       rank: (j['rank'] as int?) ?? -1,
       score: (j['score'] as int?) ?? 0,
-      attempts: (j['attempts'] as int?) ?? 0, // Parse attempts
+      attempts: (j['attempts'] as int?) ?? 0, 
     );
   }
 }
 
-class Award {
+class Award { /* ... remains the same ... */
   final String title;
   Award({required this.title});
   factory Award.fromJson(Map<String, dynamic> j) =>
@@ -235,16 +248,21 @@ class Award {
 class TeamSkills {
   final Team team;
   final int qualifierRank;
-  final int skillsRank;
+  final int skillsRank; 
   final int programmingScore;
   final int driverScore;
   final int programmingAttempts;
   final int driverAttempts;    
   final bool eligible;
   final bool inRank;
-  final bool inSkill;
-  final int qualifierRankCutoff; // New
-  final int skillsRankCutoff;   // New
+  final bool inSkill; 
+  final int qualifierRankCutoff; 
+  final int skillsRankCutoff;   
+
+  // New fields for specific programming skills ranking criterion
+  final int programmingOnlyRank;
+  final int programmingOnlyRankCutoff;
+  final bool meetsProgrammingOnlyRankCriterion;
 
   TeamSkills({
     required this.team,
@@ -257,7 +275,10 @@ class TeamSkills {
     required this.eligible,
     required this.inRank,
     required this.inSkill,
-    required this.qualifierRankCutoff, // New
-    required this.skillsRankCutoff,   // New
+    required this.qualifierRankCutoff, 
+    required this.skillsRankCutoff,
+    required this.programmingOnlyRank,
+    required this.programmingOnlyRankCutoff,
+    required this.meetsProgrammingOnlyRankCriterion,
   });
 }

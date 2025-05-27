@@ -1,10 +1,11 @@
+// lib/eligibility_page.dart
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api_service.dart';
-import 'models.dart';
+import 'models.dart'; // Will use the updated models
 import 'mobile_eligibility_view.dart';
 
 enum SortableColumn {
@@ -19,6 +20,7 @@ enum SortableColumn {
   grade,
   pilotAttempts,
   autonAttempts,
+  // We could add programmingOnlyRank for sorting if desired later
 }
 
 class EligibilityPage extends StatefulWidget {
@@ -28,6 +30,7 @@ class EligibilityPage extends StatefulWidget {
 }
 
 class _EligibilityPageState extends State<EligibilityPage> {
+  // ... (State variables and methods like initState, dispose, loadInitialSettings, etc. remain mostly the same) ...
   late RobotEventsApiService api;
   final skuCtrl = TextEditingController();
   final searchCtrl = TextEditingController();
@@ -61,8 +64,9 @@ class _EligibilityPageState extends State<EligibilityPage> {
   static const String _autoReloadPrefKey = 'autoReloadEnabled';
 
   bool _eventHasSplitGradeAwards = false;
-  bool _isMobileViewEnabled = false;
+  bool _isMobileViewEnabled = false; 
   static const String _mobileViewPrefKey = 'mobileViewEnabled';
+
 
   @override
   void initState() {
@@ -81,7 +85,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   Future<void> _loadInitialSettingsAndData() async {
-    // ... (implementation is the same as previous correct version)
+    // ... (implementation is the same)
     if (!mounted) return;
     setState(() { loading = true; error = null; });
 
@@ -116,7 +120,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
       if (!mounted) return;
       setState(() {
         _selectedProgram = initialProgram;
-        _programRules = ProgramRules.forProgram(_selectedProgram!);
+        _programRules = ProgramRules.forProgram(_selectedProgram!); // This will now include new rules
         _selectedSeason = initialSeason;
         api = RobotEventsApiService(program: _selectedProgram!, season: _selectedSeason!);
       });
@@ -143,7 +147,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
   
   void _manageAutoReloadTimer() {
-    // ... (implementation is the same as previous correct version)
+    // ... (implementation is the same)
     _cancelAutoReloadTimer();
     if (_isAutoReloadEnabled && selectedEvent != null && mounted) {
       _autoReloadTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
@@ -155,13 +159,13 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   void _cancelAutoReloadTimer() {
-    // ... (implementation is the same as previous correct version)
+    // ... (implementation is the same)
     _autoReloadTimer?.cancel();
     _autoReloadTimer = null;
   }
 
   Future<void> _loadEvents() async {
-    // ... (implementation is the same as previous correct version)
+    // ... (implementation is the same)
     if (_selectedProgram == null || _selectedSeason == null) {
       if (!mounted) return;
       setState(() => error = 'Program or Season not selected.');
@@ -184,7 +188,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   Future<void> _loadSku() async {
-    // ... (implementation is the same as previous correct version)
+    // ... (implementation is the same)
     final String rawInput = skuCtrl.text.trim();
     final String processedInput = rawInput.toUpperCase();
 
@@ -251,7 +255,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
   
   void _clearEventData({bool resetSort = false}) {
-    // ... (implementation is the same as previous correct version)
+    // ... (implementation is the same)
      if (!mounted) return;
      setState(() {
         divisions = [];
@@ -269,7 +273,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   Future<void> _loadAllDataForEvent(int eventId, {bool isAutoReload = false}) async {
-    // ... (implementation is the same as previous correct version)
+    // ... (implementation is the same)
     if (_programRules == null || _selectedProgram == null) {
       if (!mounted) return;
       setState(() => error = 'Program rules or program not loaded. Please check settings.');
@@ -326,7 +330,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   bool get isCombinedDivisionEvent {
-    // ... (implementation is the same as previous correct version)
+    // ... (implementation is the same)
     if (_programRules == null) return true; 
     if (!_programRules!.hasMiddleSchoolHighSchoolDivisions) {
       return true;
@@ -335,13 +339,12 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   double get eligibilityThreshold {
-    // ... (implementation is the same as previous correct version)
+    // ... (implementation is the same)
     if (_programRules == null) return 0.5;
     return _programRules!.threshold;
   }
 
   List<TeamSkills> get tableRecords {
-    // ... (implementation is the same as previous correct version)
     if (_programRules == null || teams.isEmpty || _selectedProgram == null) return [];
 
     final Map<int, Team> teamMap = {for (var t in teams) t.id: t};
@@ -380,41 +383,78 @@ class _EligibilityPageState extends State<EligibilityPage> {
 
     Map<String, List<Ranking>> gradeQualifierRankingsMap = {};
     Map<String, List<Map<String,dynamic>>> gradeSkillsRankingsMap = {}; 
+    Map<String, List<Map<String,dynamic>>> gradeProgrammingOnlyRankingsMap = {}; // New map for programming-only ranks
 
-    if (!isCombinedDivisionEvent) { 
+    final bool checkProgRankRule = _programRules!.requiresRankInPositiveProgrammingSkills;
+
+    if (!isCombinedDivisionEvent || checkProgRankRule) { // Precompute if either needs grade-specific data
       final Set<String> grades = teams.map((t) => t.grade.toLowerCase()).toSet()..removeWhere((g) => g.isEmpty);
-      for (String grade in grades) {
-        gradeQualifierRankingsMap[grade] = rawRankings
-            .where((r) {
-              final rTeam = teamMap[r.teamId];
-              return rTeam != null && rTeam.grade.toLowerCase() == grade && r.rank > 0;
-            })
-            .toList()
-            ..sort((a, b) => a.rank.compareTo(b.rank));
+      List<String> contextsToProcess = [];
+      if(isCombinedDivisionEvent && checkProgRankRule) { // Only overall context for prog rank if main event is combined
+          contextsToProcess.add("overall_for_prog_rank");
+      } else if (!isCombinedDivisionEvent) { // Grade specific contexts for prog rank (and others)
+          contextsToProcess.addAll(grades);
+          if (teams.any((t) => t.grade.isEmpty)) contextsToProcess.add("no_grade_for_prog_rank"); // Handle teams with no grade for prog rank
+      }
 
-        List<Map<String,dynamic>> gradeTeamsWithCombinedScores = [];
-         for (var teamEntry in teamMap.entries) {
-            if (teamEntry.value.grade.toLowerCase() == grade) {
-                int teamId = teamEntry.key;
-                int combinedScore = (bestProgrammingRuns[teamId]?.score ?? 0) + 
-                                      (bestDriverRuns[teamId]?.score ?? 0);
-                 if (combinedScore > 0 || bestProgrammingRuns.containsKey(teamId) || bestDriverRuns.containsKey(teamId) ) {
-                    gradeTeamsWithCombinedScores.add({'teamId': teamId, 'combinedScore': combinedScore});
+
+      for (String gradeOrContext in contextsToProcess) {
+        // Qualifier Rankings (only if !isCombinedDivisionEvent)
+        if (!isCombinedDivisionEvent && gradeOrContext != "overall_for_prog_rank" && gradeOrContext != "no_grade_for_prog_rank") {
+            gradeQualifierRankingsMap[gradeOrContext] = rawRankings
+                .where((r) {
+                  final rTeam = teamMap[r.teamId];
+                  return rTeam != null && rTeam.grade.toLowerCase() == gradeOrContext && r.rank > 0;
+                })
+                .toList()..sort((a, b) => a.rank.compareTo(b.rank));
+        }
+
+        // Combined Skills Re-ranking per grade (only if !isCombinedDivisionEvent)
+        if (!isCombinedDivisionEvent && gradeOrContext != "overall_for_prog_rank" && gradeOrContext != "no_grade_for_prog_rank") {
+            List<Map<String,dynamic>> gradeTeamsWithCombinedScores = [];
+            for (var teamEntry in teamMap.entries) {
+                if (teamEntry.value.grade.toLowerCase() == gradeOrContext) {
+                    int teamId = teamEntry.key;
+                    int combinedScore = (bestProgrammingRuns[teamId]?.score ?? 0) + (bestDriverRuns[teamId]?.score ?? 0);
+                    if (combinedScore > 0 || bestProgrammingRuns.containsKey(teamId) || bestDriverRuns.containsKey(teamId) ) {
+                        gradeTeamsWithCombinedScores.add({'teamId': teamId, 'combinedScore': combinedScore});
+                    }
                 }
             }
+            gradeTeamsWithCombinedScores.sort((a,b) => (b['combinedScore'] as int).compareTo(a['combinedScore'] as int));
+            List<Map<String,dynamic>> gradeSkillRanks = [];
+            for(int i=0; i < gradeTeamsWithCombinedScores.length; i++){
+                gradeSkillRanks.add({'teamId': gradeTeamsWithCombinedScores[i]['teamId'] as int, 'rank': i+1 });
+            }
+            gradeSkillsRankingsMap[gradeOrContext] = gradeSkillRanks;
         }
-        gradeTeamsWithCombinedScores.sort((a,b) => (b['combinedScore'] as int).compareTo(a['combinedScore'] as int));
-        
-        List<Map<String,dynamic>> gradeSkillRanks = [];
-        for(int i=0; i < gradeTeamsWithCombinedScores.length; i++){
-            gradeSkillRanks.add({
-                'teamId': gradeTeamsWithCombinedScores[i]['teamId'] as int,
-                'rank': i+1
-            });
+
+        // Programming Only Skills Re-ranking (for applicable contexts)
+        if (checkProgRankRule) {
+            List<Map<String,dynamic>> programmingOnlyPool = [];
+            for (var teamEntry in teamMap.entries) {
+                bool include = false;
+                if (gradeOrContext == "overall_for_prog_rank") include = true;
+                else if (gradeOrContext == "no_grade_for_prog_rank" && teamEntry.value.grade.isEmpty) include = true;
+                else if (teamEntry.value.grade.toLowerCase() == gradeOrContext) include = true;
+
+                if (include) {
+                    final progRun = bestProgrammingRuns[teamEntry.key];
+                    if (progRun != null && progRun.score > 0) {
+                        programmingOnlyPool.add({'teamId': teamEntry.key, 'score': progRun.score});
+                    }
+                }
+            }
+            programmingOnlyPool.sort((a,b) => (b['score'] as int).compareTo(a['score'] as int));
+            List<Map<String,dynamic>> progOnlyRanks = [];
+            for(int i=0; i < programmingOnlyPool.length; i++){
+                progOnlyRanks.add({'teamId': programmingOnlyPool[i]['teamId'] as int, 'rank': i+1});
+            }
+            gradeProgrammingOnlyRankingsMap[gradeOrContext] = progOnlyRanks;
         }
-        gradeSkillsRankingsMap[grade] = gradeSkillRanks;
       }
     }
+
 
     return teams.map((team) {
       final RawSkill? bestProgRun = bestProgrammingRuns[team.id];
@@ -433,8 +473,13 @@ class _EligibilityPageState extends State<EligibilityPage> {
       
       bool isInQualifyingRank;
       bool isInSkillsRank;
-      int qualCutoffValue; // Renamed for clarity from just 'qualCutoff'
-      int skillsCutoffValue; // Renamed for clarity from 'skillsCutoffTargetRank'
+      int qualCutoffValue; 
+      int skillsCutoffValue; 
+
+      // New variables for programming only rank criteria
+      int teamProgrammingOnlyRank = -1;
+      int programmingOnlyRankCutoffValue = -1;
+      bool meetsProgOnlyRankCriterion = true; // Default to true if rule doesn't apply or team meets it
 
       if (isCombinedDivisionEvent) { 
         final totalRankedTeamsInDivision = rawRankings.where((r) => r.rank > 0).length;
@@ -443,8 +488,23 @@ class _EligibilityPageState extends State<EligibilityPage> {
 
         skillsCutoffValue = max(1, applyProgramSpecificRounding(totalRankedTeamsInDivision * eligibilityThreshold, _selectedProgram!));
         isInSkillsRank = displaySkillsRank > 0 && displaySkillsRank <= skillsCutoffValue;
-      } else { 
+
+        if (_programRules!.requiresRankInPositiveProgrammingSkills) {
+            final List<Map<String,dynamic>>? progOnlyPool = gradeProgrammingOnlyRankingsMap["overall_for_prog_rank"];
+            if (teamProgrammingScore > 0 && progOnlyPool != null && progOnlyPool.isNotEmpty) {
+                final teamEntryInPool = progOnlyPool.firstWhere((e) => e['teamId'] == team.id, orElse: () => {});
+                teamProgrammingOnlyRank = teamEntryInPool['rank'] ?? -1;
+                programmingOnlyRankCutoffValue = max(1, applyProgramSpecificRounding(progOnlyPool.length * _programRules!.programmingSkillsRankThreshold, _selectedProgram!));
+                meetsProgOnlyRankCriterion = teamProgrammingOnlyRank > 0 && teamProgrammingOnlyRank <= programmingOnlyRankCutoffValue;
+            } else {
+                meetsProgOnlyRankCriterion = false; // No positive score or no pool
+            }
+        }
+
+      } else { // Grade-specific logic
         final teamGrade = team.grade.toLowerCase();
+        String gradeContextKey = teamGrade.isNotEmpty ? teamGrade : "no_grade_for_prog_rank";
+
         if (teamGrade.isNotEmpty && gradeQualifierRankingsMap.containsKey(teamGrade)) {
             final List<Ranking> gradeQualifiers = gradeQualifierRankingsMap[teamGrade]!;
             final int gradeSpecificQualifierCount = gradeQualifiers.length;
@@ -459,19 +519,31 @@ class _EligibilityPageState extends State<EligibilityPage> {
             final List<Map<String,dynamic>>? gradeSkillsRankList = gradeSkillsRankingsMap[teamGrade];
             final gradeSkillEntryForTeam = gradeSkillsRankList?.firstWhere((s) => s['teamId'] == team.id, orElse: () => {'rank': -1});
             displaySkillsRank = gradeSkillEntryForTeam?['rank'] as int? ?? -1;
-
             isInSkillsRank = displaySkillsRank > 0 && displaySkillsRank <= skillsCutoffValue;
         } else { 
             isInQualifyingRank = false;
             isInSkillsRank = false;
-            qualCutoffValue = -1; // Indicate no applicable cutoff
-            skillsCutoffValue = -1; // Indicate no applicable cutoff
+            qualCutoffValue = -1; 
+            skillsCutoffValue = -1; 
             displayQualRank = overallRankingData.rank > 0 ? overallRankingData.rank : -1;
+        }
+
+        if (_programRules!.requiresRankInPositiveProgrammingSkills) {
+            final List<Map<String,dynamic>>? progOnlyPool = gradeProgrammingOnlyRankingsMap[gradeContextKey];
+            if (teamProgrammingScore > 0 && progOnlyPool != null && progOnlyPool.isNotEmpty) {
+                final teamEntryInPool = progOnlyPool.firstWhere((e) => e['teamId'] == team.id, orElse: () => {});
+                teamProgrammingOnlyRank = teamEntryInPool['rank'] ?? -1;
+                programmingOnlyRankCutoffValue = max(1, applyProgramSpecificRounding(progOnlyPool.length * _programRules!.programmingSkillsRankThreshold, _selectedProgram!));
+                meetsProgOnlyRankCriterion = teamProgrammingOnlyRank > 0 && teamProgrammingOnlyRank <= programmingOnlyRankCutoffValue;
+            } else {
+                 meetsProgOnlyRankCriterion = false;
+            }
         }
       }
 
       bool isEligible = isInQualifyingRank &&
                         isInSkillsRank &&
+                        meetsProgOnlyRankCriterion && // Add new criterion
                         (_programRules!.requiresProgrammingSkills ? (teamProgrammingScore > 0) : true) &&
                         (_programRules!.requiresDriverSkills ? (teamDriverScore > 0) : true);
 
@@ -486,11 +558,15 @@ class _EligibilityPageState extends State<EligibilityPage> {
         eligible: isEligible,
         inRank: isInQualifyingRank,
         inSkill: isInSkillsRank,
-        qualifierRankCutoff: qualCutoffValue,   // Pass calculated cutoff
-        skillsRankCutoff: skillsCutoffValue, // Pass calculated cutoff
+        qualifierRankCutoff: qualCutoffValue,   
+        skillsRankCutoff: skillsCutoffValue, 
+        programmingOnlyRank: teamProgrammingOnlyRank,
+        programmingOnlyRankCutoff: programmingOnlyRankCutoffValue,
+        meetsProgrammingOnlyRankCriterion: meetsProgOnlyRankCriterion,
       );
     }).toList();
   }
+
 
   String _formatRank(int rank) => rank < 0 ? 'N/A' : '#$rank';
 
