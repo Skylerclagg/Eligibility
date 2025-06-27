@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api_service.dart';
 import 'models.dart'; // Will use the updated models
@@ -64,8 +65,9 @@ class _EligibilityPageState extends State<EligibilityPage> {
   static const String _autoReloadPrefKey = 'autoReloadEnabled';
 
   bool _eventHasSplitGradeAwards = false;
-  bool _isMobileViewEnabled = false; 
+  bool _isMobileViewEnabled = false;
   static const String _mobileViewPrefKey = 'mobileViewEnabled';
+  static const bool _debugEligibility = kDebugMode;
 
 
   @override
@@ -327,6 +329,9 @@ class _EligibilityPageState extends State<EligibilityPage> {
         }
 
         detectedSplitAwards = gradeAwardHits.length >= 2;
+        if (_debugEligibility) {
+          debugPrint('Award scan: hits=$gradeAwardHits => split=$detectedSplitAwards');
+        }
       }
       if(!mounted) return;
       setState(() {
@@ -481,6 +486,9 @@ class _EligibilityPageState extends State<EligibilityPage> {
       }
     }
 
+    if (_debugEligibility) {
+      debugPrint('Contexts computed: qualifier=${gradeQualifierRankingsMap.keys} skills=${gradeSkillsRankingsMap.keys} progOnly=${gradeProgrammingOnlyRankingsMap.keys}');
+    }
 
     return teams.map((team) {
       final RawSkill? bestProgRun = bestProgrammingRuns[team.id];
@@ -573,6 +581,14 @@ class _EligibilityPageState extends State<EligibilityPage> {
                         (_programRules!.requiresProgrammingSkills ? (teamProgrammingScore > 0) : true) &&
                         (_programRules!.requiresDriverSkills ? (teamDriverScore > 0) : true);
 
+      if (_debugEligibility) {
+        debugPrint(
+          'Team ${team.number} ${team.grade} -> qualRank=$displayQualRank '
+          '(cutoff $qualCutoffValue) skillsRank=$displaySkillsRank '
+          '(cutoff $skillsCutoffValue) progOnlyRank=$teamProgrammingOnlyRank '
+          '(cutoff $programmingOnlyRankCutoffValue) eligible=$isEligible');
+      }
+
       return TeamSkills(
         team: team,
         qualifierRank: displayQualRank,
@@ -613,7 +629,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
     int qualCutoffRankDisplay;
     int skillsCutoffRankDisplay; 
 
-    if (isCombinedDivisionEvent || gradeLevelContext == null) { 
+    if (isCombinedDivisionEvent || gradeLevelContext == null) {
       final totalRankedTeamsInQualifiers = rawRankings.where((r)=>r.rank > 0).length;
       qualCutoffRankDisplay = max(1, applyProgramSpecificRounding(totalRankedTeamsInQualifiers * eligibilityThreshold, _selectedProgram!));
       skillsCutoffRankDisplay = max(1, applyProgramSpecificRounding(totalRankedTeamsInQualifiers * eligibilityThreshold, _selectedProgram!));
@@ -626,6 +642,10 @@ class _EligibilityPageState extends State<EligibilityPage> {
       }).length;
       qualCutoffRankDisplay = max(1, applyProgramSpecificRounding(gradeSpecificRankedTeamsInQualifiers * eligibilityThreshold, _selectedProgram!));
       skillsCutoffRankDisplay = max(1, applyProgramSpecificRounding(gradeSpecificRankedTeamsInQualifiers * eligibilityThreshold, _selectedProgram!));
+    }
+
+    if (_debugEligibility) {
+      debugPrint('Summary(${gradeLevelContext ?? "overall"}): qualCutoff=$qualCutoffRankDisplay skillsCutoff=$skillsCutoffRankDisplay eligible=${recordsForSummary.where((ts)=>ts.eligible).length}/${recordsForSummary.length}');
     }
 
     final eligibleTeamNumbers = recordsForSummary.where((ts) => ts.eligible).map((ts) => ts.team.number).toList();
@@ -848,6 +868,10 @@ class _EligibilityPageState extends State<EligibilityPage> {
       if (ia != ib) return ia.compareTo(ib);
       return a.compareTo(b);
     });
+
+    if (_debugEligibility) {
+      debugPrint('Grade groups: ${orderedGradeKeys.map((k)=>"$k:${gradeGroups[k]!.length}").join(', ')} others=${otherTeamsDesktop.length}');
+    }
 
     if (_isMobileViewEnabled) {
       // Basic error/empty states for mobile
