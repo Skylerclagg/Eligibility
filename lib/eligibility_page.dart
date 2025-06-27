@@ -357,6 +357,19 @@ class _EligibilityPageState extends State<EligibilityPage> {
     return _programRules!.threshold;
   }
 
+  String _canonicalizeGrade(String grade) {
+    String lower = grade.toLowerCase().replaceAll(RegExp(r'\s*\(.*\)'), '').trim();
+    if (lower.isEmpty) return '';
+    if (lower == 'hs' || lower.contains('high school')) return 'high school';
+    if (lower == 'ms' || lower.contains('middle school')) return 'middle school';
+    if (lower == 'es' || lower.contains('elementary')) return 'elementary school';
+    return lower;
+  }
+
+  String _displayGradeName(String canonical) {
+    return canonical.split(' ').map((w) => w.isNotEmpty ? w[0].toUpperCase() + w.substring(1) : '').join(' ');
+  }
+
   List<TeamSkills> get tableRecords {
     if (_programRules == null || teams.isEmpty || _selectedProgram == null) return [];
 
@@ -401,7 +414,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
     final bool checkProgRankRule = _programRules!.requiresRankInPositiveProgrammingSkills;
 
     if (!isCombinedDivisionEvent || checkProgRankRule) { // Precompute if either needs grade-specific data
-      final Set<String> grades = teams.map((t) => t.grade.toLowerCase()).toSet()..removeWhere((g) => g.isEmpty);
+      final Set<String> grades = teams.map((t) => _canonicalizeGrade(t.grade)).toSet()..removeWhere((g) => g.isEmpty);
       List<String> contextsToProcess = [];
       if(isCombinedDivisionEvent && checkProgRankRule) { // Only overall context for prog rank if main event is combined
           contextsToProcess.add("overall_for_prog_rank");
@@ -417,7 +430,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
             gradeQualifierRankingsMap[gradeOrContext] = rawRankings
                 .where((r) {
                   final rTeam = teamMap[r.teamId];
-                  return rTeam != null && rTeam.grade.toLowerCase() == gradeOrContext && r.rank > 0;
+                  return rTeam != null && _canonicalizeGrade(rTeam.grade) == gradeOrContext && r.rank > 0;
                 })
                 .toList()..sort((a, b) => a.rank.compareTo(b.rank));
         }
@@ -426,7 +439,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
         if (!isCombinedDivisionEvent && gradeOrContext != "overall_for_prog_rank" && gradeOrContext != "no_grade_for_prog_rank") {
             List<Map<String,dynamic>> gradeTeamsWithCombinedScores = [];
             for (var teamEntry in teamMap.entries) {
-                if (teamEntry.value.grade.toLowerCase() == gradeOrContext) {
+                if (_canonicalizeGrade(teamEntry.value.grade) == gradeOrContext) {
                     int teamId = teamEntry.key;
                     int combinedScore = (bestProgrammingRuns[teamId]?.score ?? 0) + (bestDriverRuns[teamId]?.score ?? 0);
                     if (combinedScore > 0 || bestProgrammingRuns.containsKey(teamId) || bestDriverRuns.containsKey(teamId) ) {
@@ -449,7 +462,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
                 bool include = false;
                 if (gradeOrContext == "overall_for_prog_rank") include = true;
                 else if (gradeOrContext == "no_grade_for_prog_rank" && teamEntry.value.grade.isEmpty) include = true;
-                else if (teamEntry.value.grade.toLowerCase() == gradeOrContext) include = true;
+                else if (_canonicalizeGrade(teamEntry.value.grade) == gradeOrContext) include = true;
 
                 if (include) {
                     final progRun = bestProgrammingRuns[teamEntry.key];
@@ -515,7 +528,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
         }
 
       } else { // Grade-specific logic
-        final teamGrade = team.grade.toLowerCase();
+        final teamGrade = _canonicalizeGrade(team.grade);
         String gradeContextKey = teamGrade.isNotEmpty ? teamGrade : "no_grade_for_prog_rank";
 
         if (teamGrade.isNotEmpty && gradeQualifierRankingsMap.containsKey(teamGrade)) {
@@ -589,7 +602,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
 
     final recordsForSummary = gradeLevelContext == null
         ? tableRecords
-        : tableRecords.where((ts) => ts.team.grade.toLowerCase() == gradeLevelContext.toLowerCase()).toList();
+        : tableRecords.where((ts) => _canonicalizeGrade(ts.team.grade) == _canonicalizeGrade(gradeLevelContext)).toList();
 
     if (recordsForSummary.isEmpty && gradeLevelContext != null) {
       return Padding(
@@ -605,11 +618,11 @@ class _EligibilityPageState extends State<EligibilityPage> {
       qualCutoffRankDisplay = max(1, applyProgramSpecificRounding(totalRankedTeamsInQualifiers * eligibilityThreshold, _selectedProgram!));
       skillsCutoffRankDisplay = max(1, applyProgramSpecificRounding(totalRankedTeamsInQualifiers * eligibilityThreshold, _selectedProgram!));
     } else {
-      final grade = gradeLevelContext.toLowerCase();
+      final grade = _canonicalizeGrade(gradeLevelContext);
       final gradeSpecificRankedTeamsInQualifiers = rawRankings.where((r) {
-        final teamData = teams.firstWhere((t) => t.id == r.teamId, 
+        final teamData = teams.firstWhere((t) => t.id == r.teamId,
             orElse: () => Team(id: -1, number: '', name: '', grade: '', organization: '', state: '', city: '', country: ''));
-        return teamData.grade.toLowerCase() == grade && r.rank > 0;
+        return _canonicalizeGrade(teamData.grade) == grade && r.rank > 0;
       }).length;
       qualCutoffRankDisplay = max(1, applyProgramSpecificRounding(gradeSpecificRankedTeamsInQualifiers * eligibilityThreshold, _selectedProgram!));
       skillsCutoffRankDisplay = max(1, applyProgramSpecificRounding(gradeSpecificRankedTeamsInQualifiers * eligibilityThreshold, _selectedProgram!));
@@ -812,13 +825,13 @@ class _EligibilityPageState extends State<EligibilityPage> {
     Map<String, String> gradeDisplayNames = {};
     if (!isCombinedDivisionEvent) {
       for (var rec in processedRecords) {
-        final grade = rec.team.grade.trim();
-        if (grade.isEmpty) {
+        final rawGrade = rec.team.grade.trim();
+        if (rawGrade.isEmpty) {
           otherTeamsDesktop.add(rec);
         } else {
-          final lower = grade.toLowerCase();
-          gradeGroups.putIfAbsent(lower, () => []).add(rec);
-          gradeDisplayNames.putIfAbsent(lower, () => grade);
+          final canonical = _canonicalizeGrade(rawGrade);
+          gradeGroups.putIfAbsent(canonical, () => []).add(rec);
+          gradeDisplayNames.putIfAbsent(canonical, () => _displayGradeName(canonical));
         }
       }
     } else {
@@ -897,7 +910,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
             for (final gradeKey in orderedGradeKeys)
               if (gradeGroups[gradeKey]!.isNotEmpty ||
                   (otherTeamsDesktop.isEmpty && !isSearchFilterActive && !hideNoData &&
-                   processedRecords.any((r) => r.team.grade.toLowerCase() == gradeKey))) ...[
+                   processedRecords.any((r) => _canonicalizeGrade(r.team.grade) == gradeKey))) ...[
                 _tableSectionTitle('${gradeDisplayNames[gradeKey]} Teams (${gradeGroups[gradeKey]!.length})'),
                 _buildSummaryWidget(gradeDisplayNames[gradeKey]),
                 _buildTableForRecordsList(gradeGroups[gradeKey]!),
