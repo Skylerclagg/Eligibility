@@ -304,16 +304,19 @@ class _EligibilityPageState extends State<EligibilityPage> {
 
       bool detectedSplitAwards = false;
       if (_programRules!.hasMiddleSchoolHighSchoolDivisions) {
-          final String baseAwardNameLower = _selectedProgram!.awardName.toLowerCase();
-          final String msAwardPattern = "$baseAwardNameLower - middle school";
-          final String hsAwardPattern = "$baseAwardNameLower - high school";
+        final String baseAwardNameLower = _selectedProgram!.awardName.toLowerCase();
 
-          bool msAwardFound = awards.any((awardL) => awardL.title.toLowerCase() == msAwardPattern);
-          bool hsAwardFound = awards.any((awardL) => awardL.title.toLowerCase() == hsAwardPattern);
+        bool msAwardFound = awards.any((awardL) {
+          final lower = awardL.title.toLowerCase();
+          return lower.contains(baseAwardNameLower) && lower.contains('middle school');
+        });
 
-          if (msAwardFound && hsAwardFound) {
-              detectedSplitAwards = true;
-          }
+        bool hsAwardFound = awards.any((awardL) {
+          final lower = awardL.title.toLowerCase();
+          return lower.contains(baseAwardNameLower) && lower.contains('high school');
+        });
+
+        detectedSplitAwards = msAwardFound && hsAwardFound;
       }
       if(!mounted) return;
       setState(() {
@@ -793,14 +796,34 @@ class _EligibilityPageState extends State<EligibilityPage> {
     final List<TeamSkills> eligibleForMobile = processedRecords.where((r) => r.eligible).toList();
     final List<TeamSkills> ineligibleForMobile = processedRecords.where((r) => !r.eligible).toList();
 
-    // Desktop view still uses its own msTeams, hsTeams, otherTeams logic for sections
-    List<TeamSkills> msTeamsDesktop = [], hsTeamsDesktop = [], otherTeamsDesktop = [];
-    if (!isCombinedDivisionEvent) { 
-      msTeamsDesktop = processedRecords.where((r) => r.team.grade.toLowerCase() == 'middle school').toList();
-      hsTeamsDesktop = processedRecords.where((r) => r.team.grade.toLowerCase() == 'high school' || (r.team.grade.isNotEmpty && r.team.grade.toLowerCase() != 'middle school')).toList();
-      otherTeamsDesktop = processedRecords.where((r) => r.team.grade.isEmpty).toList();
+    // Desktop view groupings per grade level
+    Map<String, List<TeamSkills>> gradeGroups = {};
+    List<TeamSkills> otherTeamsDesktop = [];
+    Map<String, String> gradeDisplayNames = {};
+    if (!isCombinedDivisionEvent) {
+      for (var rec in processedRecords) {
+        final grade = rec.team.grade.trim();
+        if (grade.isEmpty) {
+          otherTeamsDesktop.add(rec);
+        } else {
+          final lower = grade.toLowerCase();
+          gradeGroups.putIfAbsent(lower, () => []).add(rec);
+          gradeDisplayNames.putIfAbsent(lower, () => grade);
+        }
+      }
     } else {
       otherTeamsDesktop = processedRecords;
+    }
+
+    List<String> orderedGradeKeys = gradeGroups.keys.toList();
+    orderedGradeKeys.sort();
+    if (orderedGradeKeys.contains('middle school')) {
+      orderedGradeKeys.remove('middle school');
+      orderedGradeKeys.insert(0, 'middle school');
+    }
+    if (orderedGradeKeys.contains('high school')) {
+      orderedGradeKeys.remove('high school');
+      orderedGradeKeys.insert(orderedGradeKeys.contains('middle school') ? 1 : 0, 'high school');
     }
 
     if (_isMobileViewEnabled) {
@@ -861,20 +884,17 @@ class _EligibilityPageState extends State<EligibilityPage> {
             _buildSummaryWidget(null),
             _buildTableForRecordsList(otherTeamsDesktop),
           ] else ...[
-            // Desktop still shows potentially empty sections if no filters active
-            if (msTeamsDesktop.isNotEmpty || (otherTeamsDesktop.isEmpty && hsTeamsDesktop.isEmpty && !isSearchFilterActive && !hideNoData && processedRecords.any((r)=>r.team.grade.toLowerCase()=='middle school'))) ...[
-              _tableSectionTitle('Middle School Teams (${msTeamsDesktop.length})'),
-              _buildSummaryWidget('Middle School'),
-              _buildTableForRecordsList(msTeamsDesktop),
-            ],
-            if (hsTeamsDesktop.isNotEmpty || (otherTeamsDesktop.isEmpty && msTeamsDesktop.isEmpty && !isSearchFilterActive && !hideNoData && processedRecords.any((r)=>r.team.grade.toLowerCase()=='high school'))) ...[
-              _tableSectionTitle('High School / Other Teams (${hsTeamsDesktop.length})'),
-               _buildSummaryWidget('High School'),
-              _buildTableForRecordsList(hsTeamsDesktop),
-            ],
-             if (otherTeamsDesktop.isNotEmpty && !isCombinedDivisionEvent) ...[
+            for (final gradeKey in orderedGradeKeys)
+              if (gradeGroups[gradeKey]!.isNotEmpty ||
+                  (otherTeamsDesktop.isEmpty && !isSearchFilterActive && !hideNoData &&
+                   processedRecords.any((r) => r.team.grade.toLowerCase() == gradeKey))) ...[
+                _tableSectionTitle('${gradeDisplayNames[gradeKey]} Teams (${gradeGroups[gradeKey]!.length})'),
+                _buildSummaryWidget(gradeDisplayNames[gradeKey]),
+                _buildTableForRecordsList(gradeGroups[gradeKey]!),
+              ],
+            if (otherTeamsDesktop.isNotEmpty) ...[
               _tableSectionTitle('Uncategorized / Grade Not Specified (${otherTeamsDesktop.length})'),
-               _buildSummaryWidget(null), 
+              _buildSummaryWidget(null),
               _buildTableForRecordsList(otherTeamsDesktop),
             ],
           ]
