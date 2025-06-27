@@ -308,9 +308,10 @@ class _EligibilityPageState extends State<EligibilityPage> {
       if (_programRules!.hasMiddleSchoolHighSchoolDivisions) {
         String baseAwardNameLower = _selectedProgram!.awardName.toLowerCase();
         List<String> keywords = [
+          baseAwardNameLower,
+          baseAwardNameLower.replaceAll('award', '').trim(),
           'excellence',
           'all-around champion',
-          baseAwardNameLower.replaceAll('award', '').trim(),
         ];
 
         Set<String> gradeAwardHits = {};
