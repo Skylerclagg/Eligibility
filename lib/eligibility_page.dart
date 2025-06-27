@@ -304,16 +304,24 @@ class _EligibilityPageState extends State<EligibilityPage> {
 
       bool detectedSplitAwards = false;
       if (_programRules!.hasMiddleSchoolHighSchoolDivisions) {
-        final String baseAwardNameLower = _selectedProgram!.awardName.toLowerCase();
+        String baseAwardNameLower = _selectedProgram!.awardName.toLowerCase();
+        // Some events omit the word "award" or use abbreviations; loosen matching
+        String keyword = baseAwardNameLower.contains('excellence')
+            ? 'excellence'
+            : baseAwardNameLower.replaceAll('award', '').trim();
 
         bool msAwardFound = awards.any((awardL) {
           final lower = awardL.title.toLowerCase();
-          return lower.contains(baseAwardNameLower) && lower.contains('middle school');
+          return lower.contains(keyword) &&
+              (lower.contains('middle school') ||
+                  RegExp(r'\bms\b').hasMatch(lower));
         });
 
         bool hsAwardFound = awards.any((awardL) {
           final lower = awardL.title.toLowerCase();
-          return lower.contains(baseAwardNameLower) && lower.contains('high school');
+          return lower.contains(keyword) &&
+              (lower.contains('high school') ||
+                  RegExp(r'\bhs\b').hasMatch(lower));
         });
 
         detectedSplitAwards = msAwardFound && hsAwardFound;
