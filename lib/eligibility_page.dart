@@ -1,15 +1,18 @@
 // lib/eligibility_page.dart
 import 'dart:async';
+import 'dart:convert';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 import 'api_service.dart';
 import 'models.dart'; // Will use the updated models
 import 'mobile_eligibility_view.dart';
 
 enum SortableColumn {
   teamNumber,
+  teamName,
   organization,
   state,
   qualifierRank,
@@ -20,6 +23,7 @@ enum SortableColumn {
   grade,
   pilotAttempts,
   autonAttempts,
+  details, // Not sortable, just for column visibility control
   // We could add programmingOnlyRank for sorting if desired later
 }
 
@@ -59,20 +63,162 @@ class _EligibilityPageState extends State<EligibilityPage> {
   SortableColumn? _sortColumn;
   bool _sortAscending = true;
 
-  bool _isAutoReloadEnabled = false;
+  bool _isAutoReloadEnabled = true;
   Timer? _autoReloadTimer;
   static const String _autoReloadPrefKey = 'autoReloadEnabled';
 
   bool _eventHasSplitGradeAwards = false;
-  bool _isMobileViewEnabled = false; 
+  bool _isMobileViewEnabled = false;
   static const String _mobileViewPrefKey = 'mobileViewEnabled';
 
+  double? _userLatitude;
+  double? _userLongitude;
+  String? _userRegion; // Full state/region name from IP API (e.g., "West Virginia")
+
+  final eventSearchCtrl = TextEditingController(); // For event search in modal
+
+  // Text size and column visibility settings
+  double _textScaleFactor = 1.0;
+  static const String _textScalePrefKey = 'textScaleFactor';
+
+  Map<SortableColumn, bool> _columnVisibility = {};
+  static const String _columnVisibilityPrefKey = 'columnVisibility';
+
+  // Row color cycling for manual highlighting
+  Map<int, int> _rowColorState = {};  // teamId -> colorIndex (0=none, 1=green, 2=yellow, 3=red)
+  static const String _rowColorStatePrefKey = 'rowColorState';
+
+  // Color definitions for manual row highlighting
+  static const List<Color> _rowHighlightColors = [
+    Colors.transparent,           // 0 = no manual highlight
+    Color(0xFF4CAF50),           // 1 = green (Material Green 500)
+    Color(0xFFFFD700),           // 2 = yellow (Gold - more vibrant)
+    Color(0xFFF44336),           // 3 = red (Material Red 500)
+  ];
+
+  // Award assignment system
+  Map<int, String> _teamAwards = {};  // teamId -> awardName
+  static const String _teamAwardsPrefKey = 'teamAwards';
+
+
+  // Program enable/disable state
+  Map<RobotProgram, bool> _programEnabled = {};
+  static const String _programEnabledPrefKey = 'programEnabled';
 
   @override
   void initState() {
     super.initState();
     _keyFocusNode = FocusNode();
+    _initializeColumnVisibility();
+    _initializeProgramEnabled();
+    _getUserLocation(); // Fetch user location in background
     _loadInitialSettingsAndData();
+  }
+
+  void _initializeColumnVisibility() {
+    _columnVisibility = {
+      for (var col in SortableColumn.values)
+        col: true // Default all columns to visible
+    };
+  }
+
+  void _initializeProgramEnabled() {
+    _programEnabled = {
+      for (var program in RobotProgram.values)
+        program: program.enabledByDefault
+    };
+  }
+
+  Future<void> _loadColumnVisibility(SharedPreferences prefs) async {
+    final String? saved = prefs.getString(_columnVisibilityPrefKey);
+    if (saved != null) {
+      try {
+        final Map<String, dynamic> savedMap = jsonDecode(saved);
+        for (var entry in savedMap.entries) {
+          final SortableColumn? column = SortableColumn.values.asNameMap()[entry.key];
+          if (column != null && entry.value is bool) {
+            _columnVisibility[column] = entry.value;
+          }
+        }
+      } catch (e) {
+        print('Failed to load column visibility: $e');
+      }
+    }
+  }
+
+  Future<void> _saveColumnVisibility() async {
+    final prefs = await SharedPreferences.getInstance();
+    final Map<String, bool> stringMap = _columnVisibility.map((key, value) => MapEntry(key.name, value));
+    await prefs.setString(_columnVisibilityPrefKey, jsonEncode(stringMap));
+  }
+
+  Future<void> _loadRowColorState(SharedPreferences prefs) async {
+    final String? saved = prefs.getString(_rowColorStatePrefKey);
+    if (saved != null) {
+      try {
+        final Map<String, dynamic> savedMap = jsonDecode(saved);
+        _rowColorState = savedMap.map((key, value) =>
+          MapEntry(int.parse(key), value as int)
+        );
+      } catch (e) {
+        print('Failed to load row color state: $e');
+        _rowColorState = {};
+      }
+    }
+  }
+
+  Future<void> _saveRowColorState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final Map<String, int> stringMap = _rowColorState.map(
+      (key, value) => MapEntry(key.toString(), value)
+    );
+    await prefs.setString(_rowColorStatePrefKey, jsonEncode(stringMap));
+  }
+
+  Future<void> _loadTeamAwards(SharedPreferences prefs) async {
+    final String? saved = prefs.getString(_teamAwardsPrefKey);
+    if (saved != null) {
+      try {
+        final Map<String, dynamic> savedMap = jsonDecode(saved);
+        _teamAwards = savedMap.map((key, value) =>
+          MapEntry(int.parse(key), value as String)
+        );
+      } catch (e) {
+        print('Failed to load team awards: $e');
+        _teamAwards = {};
+      }
+    }
+  }
+
+  Future<void> _saveTeamAwards() async {
+    final prefs = await SharedPreferences.getInstance();
+    final Map<String, String> stringMap = _teamAwards.map(
+      (key, value) => MapEntry(key.toString(), value)
+    );
+    await prefs.setString(_teamAwardsPrefKey, jsonEncode(stringMap));
+  }
+
+  Future<void> _loadProgramEnabled(SharedPreferences prefs) async {
+    final String? saved = prefs.getString(_programEnabledPrefKey);
+    if (saved != null) {
+      try {
+        final Map<String, dynamic> savedMap = jsonDecode(saved);
+        for (var entry in savedMap.entries) {
+          final RobotProgram? program = RobotProgram.values.asNameMap()[entry.key];
+          if (program != null && entry.value is bool) {
+            _programEnabled[program] = entry.value;
+          }
+        }
+      } catch (e) {
+        print('Failed to load program enabled state: $e');
+      }
+    }
+  }
+
+  Future<void> _saveProgramEnabled() async {
+    final prefs = await SharedPreferences.getInstance();
+    final Map<String, bool> stringMap = _programEnabled.map((key, value) => MapEntry(key.name, value));
+    await prefs.setString(_programEnabledPrefKey, jsonEncode(stringMap));
   }
 
   @override
@@ -81,7 +227,476 @@ class _EligibilityPageState extends State<EligibilityPage> {
     _keyFocusNode.dispose();
     skuCtrl.dispose();
     searchCtrl.dispose();
+    eventSearchCtrl.dispose();
     super.dispose();
+  }
+
+  Future<void> _getUserLocation() async {
+    try {
+      // Use ip-api.com to get approximate location from IP (free, no API key needed)
+      final response = await http.get(Uri.parse('http://ip-api.com/json/'));
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        _userLatitude = (data['lat'] as num?)?.toDouble();
+        _userLongitude = (data['lon'] as num?)?.toDouble();
+        // RobotEvents API uses full state names, so we use 'regionName' instead of 'region'
+        // ip-api returns 'regionName' as the full name (e.g., "West Virginia", "California")
+        _userRegion = data['regionName'] as String?;
+        print('📍 User location: ${data['city']}, ${data['regionName']} (country: ${data['country']})');
+        print('📍 User region for filtering: "$_userRegion"');
+      }
+    } catch (e) {
+      print('⚠️ Could not determine user location: $e');
+    }
+  }
+
+  double _calculateDistance(double? lat1, double? lon1, double? lat2, double? lon2) {
+    if (lat1 == null || lon1 == null || lat2 == null || lon2 == null) {
+      return double.infinity; // Place events without coordinates at the end
+    }
+
+    // Haversine formula to calculate distance in miles
+    const earthRadiusMiles = 3959.0;
+    final dLat = _degreesToRadians(lat2 - lat1);
+    final dLon = _degreesToRadians(lon2 - lon1);
+
+    final a = sin(dLat / 2) * sin(dLat / 2) +
+        cos(_degreesToRadians(lat1)) *
+            cos(_degreesToRadians(lat2)) *
+            sin(dLon / 2) *
+            sin(dLon / 2);
+
+    final c = 2 * atan2(sqrt(a), sqrt(1 - a));
+    return earthRadiusMiles * c;
+  }
+
+  double _degreesToRadians(double degrees) {
+    return degrees * pi / 180;
+  }
+
+  Future<void> _showEventSelectorDialog() async {
+    if (events.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No recent events available. Try loading by SKU.')),
+      );
+      return;
+    }
+
+    // Debug: Print event info
+    print('🔍 User region: "$_userRegion"');
+    print('🔍 Total events: ${events.length}');
+    if (events.isNotEmpty) {
+      print('🔍 Sample event regions: ${events.take(5).map((e) => '"${e.region}" (${e.name})').toList()}');
+      // Check for exact matches
+      final exactMatches = events.where((e) => e.region == _userRegion).length;
+      print('🔍 Events with exact region match "$_userRegion": $exactMatches');
+      // Check for case-insensitive matches
+      final caseInsensitiveMatches = events.where((e) => e.region.toUpperCase() == _userRegion?.toUpperCase()).length;
+      print('🔍 Events with case-insensitive match: $caseInsensitiveMatches');
+    }
+
+    eventSearchCtrl.clear(); // Reset search when opening dialog
+
+    final selected = await showDialog<EventInfo>(
+      context: context,
+      builder: (BuildContext context) {
+        return StatefulBuilder(
+          builder: (BuildContext context, StateSetter setDialogState) {
+            // Apply search filter
+            final searchTerm = eventSearchCtrl.text.toLowerCase();
+            final filteredEvents = searchTerm.isEmpty
+                ? events
+                : events.where((e) =>
+                    e.name.toLowerCase().contains(searchTerm) ||
+                    e.sku.toLowerCase().contains(searchTerm) ||
+                    e.city.toLowerCase().contains(searchTerm)
+                  ).toList();
+
+            // Pre-sort filtered events for the dialog (case-insensitive comparison)
+            final inStateEvents = filteredEvents.where((e) =>
+              _userRegion != null && e.region.toUpperCase() == _userRegion!.toUpperCase()
+            ).toList();
+            final otherEvents = filteredEvents.where((e) =>
+              _userRegion == null || e.region.toUpperCase() != _userRegion!.toUpperCase()
+            ).toList();
+
+            return Dialog(
+              backgroundColor: Colors.transparent,
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 650, maxHeight: 700),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surface,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(0.3),
+                      blurRadius: 20,
+                      offset: const Offset(0, 10),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    // Header
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            Theme.of(context).colorScheme.primary.withOpacity(0.8),
+                            Theme.of(context).colorScheme.primaryContainer.withOpacity(0.6),
+                          ],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                      ),
+                      child: Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.2),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: const Icon(Icons.event, size: 24, color: Colors.white),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Select Event',
+                                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
+                                ),
+                                Text(
+                                  _selectedSeason?.name ?? '',
+                                  style: TextStyle(fontSize: 13, color: Colors.white.withOpacity(0.9)),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: Colors.white),
+                            onPressed: () => Navigator.of(context).pop(),
+                            tooltip: 'Close',
+                          ),
+                        ],
+                      ),
+                    ),
+                    // Search field
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: TextField(
+                        controller: eventSearchCtrl,
+                        decoration: InputDecoration(
+                          hintText: 'Search by event name, SKU, or city...',
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: eventSearchCtrl.text.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.clear),
+                                  onPressed: () {
+                                    eventSearchCtrl.clear();
+                                    setDialogState(() {});
+                                  },
+                                )
+                              : null,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          isDense: true,
+                        ),
+                        onChanged: (_) => setDialogState(() {}),
+                      ),
+                    ),
+                    // Event list
+                    Expanded(
+                      child: filteredEvents.isEmpty
+                          ? Center(
+                              child: Padding(
+                                padding: const EdgeInsets.all(24),
+                                child: Text(
+                                  'No events match your search',
+                                  style: Theme.of(context).textTheme.bodyLarge,
+                                ),
+                              ),
+                            )
+                          : ListView.builder(
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                              itemCount: _getEventListItemCount(inStateEvents, otherEvents),
+                              itemBuilder: (context, index) => _buildEventListItem(context, index, inStateEvents, otherEvents),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+
+    if (selected != null && mounted) {
+      setState(() {
+        selectedEvent = selected;
+        skuCtrl.text = selected.sku;
+      });
+      await _loadAllDataForEvent(selected.id);
+    }
+  }
+
+  int _getEventListItemCount(List<EventInfo> inStateEvents, List<EventInfo> otherEvents) {
+    int count = 0;
+    if (inStateEvents.isNotEmpty && _userRegion != null) {
+      count += 1 + inStateEvents.length; // Header + events
+    }
+    if (otherEvents.isNotEmpty) {
+      if (inStateEvents.isNotEmpty) count += 1; // "Other States" header
+      count += otherEvents.length;
+    }
+    return count;
+  }
+
+  Widget _buildEventListItem(BuildContext context, int index, List<EventInfo> inStateEvents, List<EventInfo> otherEvents) {
+    int currentIndex = index;
+
+    // Your State section
+    if (inStateEvents.isNotEmpty && _userRegion != null) {
+      if (currentIndex == 0) {
+        // Section header
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12, top: 4),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Icon(Icons.location_on, size: 18, color: Colors.blue[400]),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                'Your State ($_userRegion) • ${inStateEvents.length} event${inStateEvents.length == 1 ? '' : 's'}',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.blue[400],
+                ),
+              ),
+            ],
+          ),
+        );
+      }
+      currentIndex -= 1;
+
+      if (currentIndex < inStateEvents.length) {
+        return _buildEventCard(context, inStateEvents[currentIndex]);
+      }
+      currentIndex -= inStateEvents.length;
+    }
+
+    // Other States section
+    if (inStateEvents.isNotEmpty && currentIndex == 0) {
+      // Section header
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 12, top: 16),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.grey.withOpacity(0.1),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(Icons.public, size: 18, color: Colors.grey[500]),
+            ),
+            const SizedBox(width: 10),
+            Text(
+              'Other States • ${otherEvents.length} event${otherEvents.length == 1 ? '' : 's'}',
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: Colors.grey[500],
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    if (inStateEvents.isNotEmpty) currentIndex -= 1;
+
+    return _buildEventCard(context, otherEvents[currentIndex]);
+  }
+
+  Widget _buildEventCard(BuildContext context, EventInfo e) {
+    final dateLabel = '${e.start.month}/${e.start.day}/${e.start.year}';
+    final isSelected = selectedEvent?.id == e.id;
+    final isCanceled = e.isCanceled;
+
+    // Determine status color and icon
+    final status = e.status;
+    Color statusColor;
+    IconData statusIcon;
+    switch (status) {
+      case 'Canceled':
+        statusColor = Colors.red;
+        statusIcon = Icons.cancel;
+        break;
+      case 'Live':
+        statusColor = Colors.green;
+        statusIcon = Icons.podcasts;
+        break;
+      case 'Completed':
+        statusColor = Colors.grey;
+        statusIcon = Icons.check_circle;
+        break;
+      default: // Upcoming
+        statusColor = Colors.blue;
+        statusIcon = Icons.schedule;
+    }
+
+    // Text color for canceled events
+    final textColor = isCanceled ? Colors.red : Theme.of(context).colorScheme.onSurface;
+    final secondaryTextColor = isCanceled ? Colors.red.withOpacity(0.7) : Colors.grey[600];
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: isSelected
+            ? Theme.of(context).colorScheme.primaryContainer.withOpacity(0.5)
+            : Theme.of(context).colorScheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isSelected
+              ? Theme.of(context).colorScheme.primary
+              : Theme.of(context).colorScheme.outline.withOpacity(0.3),
+          width: isSelected ? 2 : 1,
+        ),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: () => Navigator.of(context).pop(e),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                // Event info
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            e.name,
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: isSelected ? FontWeight.bold : FontWeight.w600,
+                              color: textColor,
+                              decoration: isCanceled ? TextDecoration.lineThrough : null,
+                              decorationColor: Colors.red,
+                              decorationThickness: 2.0,
+                            ),
+                          ),
+                          const SizedBox(height: 6),
+                          // Status badge
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: statusColor.withOpacity(0.15),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: statusColor, width: 1),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(statusIcon, size: 12, color: statusColor),
+                                const SizedBox(width: 4),
+                                Text(
+                                  status,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: statusColor,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          Icon(Icons.confirmation_number, size: 13, color: secondaryTextColor),
+                          const SizedBox(width: 4),
+                          Text(
+                            e.sku,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: secondaryTextColor,
+                              decoration: isCanceled ? TextDecoration.lineThrough : null,
+                              decorationColor: Colors.red,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Icon(Icons.calendar_today, size: 13, color: secondaryTextColor),
+                          const SizedBox(width: 4),
+                          Text(
+                            dateLabel,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: secondaryTextColor,
+                              decoration: isCanceled ? TextDecoration.lineThrough : null,
+                              decorationColor: Colors.red,
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (e.city.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            Icon(Icons.place, size: 13, color: isCanceled ? Colors.red.withOpacity(0.6) : Colors.grey[500]),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                '${e.city}, ${e.region}',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: isCanceled ? Colors.red.withOpacity(0.6) : Colors.grey[500],
+                                  decoration: isCanceled ? TextDecoration.lineThrough : null,
+                                  decorationColor: Colors.red,
+                                ),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                // Trailing icon
+                Icon(
+                  isSelected ? Icons.check_circle : Icons.arrow_forward_ios,
+                  color: isSelected ? Theme.of(context).colorScheme.primary : Colors.grey[400],
+                  size: isSelected ? 26 : 18,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _loadInitialSettingsAndData() async {
@@ -92,8 +707,15 @@ class _EligibilityPageState extends State<EligibilityPage> {
     final prefs = await SharedPreferences.getInstance();
     final savedProgramId = prefs.getInt('selectedProgramId');
     final savedSeasonId = prefs.getInt('selectedSeasonId');
-    _isAutoReloadEnabled = prefs.getBool(_autoReloadPrefKey) ?? false;
-    _isMobileViewEnabled = prefs.getBool(_mobileViewPrefKey) ?? false; 
+    _isAutoReloadEnabled = prefs.getBool(_autoReloadPrefKey) ?? true;
+    _isMobileViewEnabled = prefs.getBool(_mobileViewPrefKey) ?? false;
+    _textScaleFactor = prefs.getDouble(_textScalePrefKey) ?? 1.0;
+
+    // Load column visibility settings
+    await _loadColumnVisibility(prefs);
+    await _loadRowColorState(prefs);
+    await _loadTeamAwards(prefs);
+    await _loadProgramEnabled(prefs);
 
     RobotProgram initialProgram = RobotProgram.values.firstWhere(
         (p) => p.id == savedProgramId, orElse: () => RobotProgram.v5rc);
@@ -174,11 +796,39 @@ class _EligibilityPageState extends State<EligibilityPage> {
     if (!mounted) return;
     setState(() { loading = true; error = null; });
     try {
+      print('📡 Starting to fetch events...');
       final all = await api.fetchEvents();
+      print('📊 Received ${all.length} total events from API');
+
       final oneWeekAgo = DateTime.now().subtract(const Duration(days: 7));
       events = all.where((e) => e.start.isAfter(oneWeekAgo) || e.start.isAtSameMomentAs(oneWeekAgo)).toList();
-      events.sort((a, b) => b.start.compareTo(a.start));
+      print('🔢 After filtering: ${events.length} events in last 7 days');
+
+      // Sort events chronologically (earliest first) with distance as secondary sort
+      events.sort((a, b) {
+        // Primary sort: chronological order (earliest dates first)
+        final dateComparison = a.start.compareTo(b.start);
+        if (dateComparison != 0) return dateComparison;
+
+        // Secondary sort: by distance if available
+        if (_userLatitude != null && _userLongitude != null) {
+          final distanceA = _calculateDistance(_userLatitude, _userLongitude, a.latitude, a.longitude);
+          final distanceB = _calculateDistance(_userLatitude, _userLongitude, b.latitude, b.longitude);
+          return distanceA.compareTo(distanceB);
+        }
+        return 0;
+      });
+
+      print('📅 Events sorted chronologically (earliest first), then by distance${_userRegion != null ? " (state: $_userRegion)" : ""}');
+
+      if (events.isEmpty) {
+        print('⚠️ No events after filtering. Showing error message.');
+        setState(() => error = 'No events found in the last 7 days. ${all.length} total events available. Try loading by SKU.');
+      } else {
+        print('✅ ${events.length} events available for dropdown');
+      }
     } catch (e) {
+      print('❌ Error loading events: $e');
       if (!mounted) return;
       setState(() => error = 'Failed to load events: $e');
     } finally {
@@ -228,14 +878,18 @@ class _EligibilityPageState extends State<EligibilityPage> {
 
     try {
       final f = await api.fetchEventBySku(skuToSearch);
-      if (!mounted) return; 
+      if (!mounted) return;
       if (f != null) {
+        EventInfo eventToSelect;
         if (!events.any((e) => e.id == f.id)) {
           events.insert(0, f);
           events.sort((a, b) => b.start.compareTo(a.start));
+          eventToSelect = events.firstWhere((e) => e.id == f.id);
+        } else {
+          eventToSelect = events.firstWhere((e) => e.id == f.id);
         }
-        setState(() => selectedEvent = f);
-        await _loadAllDataForEvent(f.id); 
+        setState(() => selectedEvent = eventToSelect);
+        await _loadAllDataForEvent(eventToSelect.id); 
       } else {
         setState(() => error = 'Event not found for SKU: $skuToSearch');
         if (mounted) {
@@ -264,10 +918,12 @@ class _EligibilityPageState extends State<EligibilityPage> {
         rawRankings = [];
         rawSkills = [];
         awards = [];
-        _eventHasSplitGradeAwards = false; 
+        _eventHasSplitGradeAwards = false;
+        _rowColorState = {};  // Clear manual row colors when event changes
+        _teamAwards = {};  // Clear award assignments when event changes
         error = null;
         if (resetSort) {
-          _sortColumn = null; 
+          _sortColumn = null;
         }
      });
   }
@@ -280,48 +936,71 @@ class _EligibilityPageState extends State<EligibilityPage> {
       return;
     }
     if (!mounted) return;
-    setState(() { loading = true; _clearEventData(resetSort: !isAutoReload);});
+    // Only show loading screen for manual reloads, not auto-reloads
+    if (!isAutoReload) {
+      setState(() { loading = true; _clearEventData(resetSort: true);});
+    }
 
     try {
+      // Fetch data in background (doesn't trigger setState until all is ready)
       List<Division> fetchedDivisions = await api.fetchDivisions(eventId);
       if (fetchedDivisions.isEmpty) {
         fetchedDivisions.add(Division(id: 1, name: 'Default Division'));
       }
       if (!mounted) return;
-      divisions = fetchedDivisions;
-      selectedDivision = divisions.first;
 
-      teams = await api.fetchTeams(eventId);
+      List<Team> fetchedTeams = await api.fetchTeams(eventId);
       if (!mounted) return;
 
-      if (selectedDivision != null) {
-        rawRankings = await api.fetchRankings(eventId, selectedDivision!.id);
+      List<Ranking> fetchedRankings = [];
+      if (fetchedDivisions.isNotEmpty) {
+        fetchedRankings = await api.fetchRankings(eventId, fetchedDivisions.first.id);
       }
-       if (!mounted) return;
-      rawSkills = await api.fetchRawSkills(eventId);
-       if (!mounted) return;
-      awards = await api.fetchAwards(eventId);
+      if (!mounted) return;
+
+      List<RawSkill> fetchedSkills = await api.fetchRawSkills(eventId);
+      if (!mounted) return;
+
+      List<Award> fetchedAwards = await api.fetchAwards(eventId);
+      if (!mounted) return;
+
+      // Update state all at once to minimize re-renders
+      divisions = fetchedDivisions;
+      selectedDivision = divisions.first;
+      teams = fetchedTeams;
+      rawRankings = fetchedRankings;
+      rawSkills = fetchedSkills;
+      awards = fetchedAwards;
 
       bool detectedSplitAwards = false;
       if (_programRules!.hasMiddleSchoolHighSchoolDivisions) {
         final String baseAwardNameLower = _selectedProgram!.awardName.toLowerCase();
 
-        bool msAwardFound = awards.any((awardL) {
+        bool esAwardFound = fetchedAwards.any((awardL) {
+          final lower = awardL.title.toLowerCase();
+          return lower.contains(baseAwardNameLower) && lower.contains('elementary school');
+        });
+
+        bool msAwardFound = fetchedAwards.any((awardL) {
           final lower = awardL.title.toLowerCase();
           return lower.contains(baseAwardNameLower) && lower.contains('middle school');
         });
 
-        bool hsAwardFound = awards.any((awardL) {
+        bool hsAwardFound = fetchedAwards.any((awardL) {
           final lower = awardL.title.toLowerCase();
           return lower.contains(baseAwardNameLower) && lower.contains('high school');
         });
 
-        detectedSplitAwards = msAwardFound && hsAwardFound;
+        detectedSplitAwards = msAwardFound && hsAwardFound || esAwardFound && msAwardFound;
       }
       if(!mounted) return;
-      setState(() {
-        _eventHasSplitGradeAwards = detectedSplitAwards;
-      });
+
+      // For auto-reload, update everything in one setState to prevent flickering
+      // For manual reload, loading screen is already showing so just update the flag
+      _eventHasSplitGradeAwards = detectedSplitAwards;
+      if (isAutoReload && mounted) {
+        setState(() {});
+      }
 
     } catch (e) {
       if (!mounted) return;
@@ -493,11 +1172,13 @@ class _EligibilityPageState extends State<EligibilityPage> {
         isInSkillsRank = displaySkillsRank > 0 && displaySkillsRank <= skillsCutoffValue;
 
         if (_programRules!.requiresRankInPositiveProgrammingSkills) {
+            // Always calculate the cutoff, even if team doesn't have a programming score
+            programmingOnlyRankCutoffValue = max(1, applyProgramSpecificRounding(totalRankedTeamsInDivision * eligibilityThreshold, _selectedProgram!));
+
             final List<Map<String,dynamic>>? progOnlyPool = gradeProgrammingOnlyRankingsMap["overall_for_prog_rank"];
             if (teamProgrammingScore > 0 && progOnlyPool != null && progOnlyPool.isNotEmpty) {
                 final teamEntryInPool = progOnlyPool.firstWhere((e) => e['teamId'] == team.id, orElse: () => {});
                 teamProgrammingOnlyRank = teamEntryInPool['rank'] ?? -1;
-                programmingOnlyRankCutoffValue = max(1, applyProgramSpecificRounding(progOnlyPool.length * _programRules!.programmingSkillsRankThreshold, _selectedProgram!));
                 meetsProgOnlyRankCriterion = teamProgrammingOnlyRank > 0 && teamProgrammingOnlyRank <= programmingOnlyRankCutoffValue;
             } else {
                 meetsProgOnlyRankCriterion = false; // No positive score or no pool
@@ -507,36 +1188,41 @@ class _EligibilityPageState extends State<EligibilityPage> {
       } else { // Grade-specific logic
         final teamGrade = team.grade.toLowerCase();
         String gradeContextKey = teamGrade.isNotEmpty ? teamGrade : "no_grade_for_prog_rank";
+        int gradeSpecificQualifierCount = 0;
 
         if (teamGrade.isNotEmpty && gradeQualifierRankingsMap.containsKey(teamGrade)) {
             final List<Ranking> gradeQualifiers = gradeQualifierRankingsMap[teamGrade]!;
-            final int gradeSpecificQualifierCount = gradeQualifiers.length;
+            gradeSpecificQualifierCount = gradeQualifiers.length;
             qualCutoffValue = max(1, applyProgramSpecificRounding(gradeSpecificQualifierCount * eligibilityThreshold, _selectedProgram!));
-            
+
             final teamIndexInGradeQual = gradeQualifiers.indexWhere((r) => r.teamId == team.id);
             displayQualRank = (teamIndexInGradeQual != -1) ? teamIndexInGradeQual + 1 : -1;
             isInQualifyingRank = displayQualRank > 0 && displayQualRank <= qualCutoffValue;
 
             skillsCutoffValue = max(1, applyProgramSpecificRounding(gradeSpecificQualifierCount * eligibilityThreshold, _selectedProgram!));
-            
+
             final List<Map<String,dynamic>>? gradeSkillsRankList = gradeSkillsRankingsMap[teamGrade];
             final gradeSkillEntryForTeam = gradeSkillsRankList?.firstWhere((s) => s['teamId'] == team.id, orElse: () => {'rank': -1});
             displaySkillsRank = gradeSkillEntryForTeam?['rank'] as int? ?? -1;
             isInSkillsRank = displaySkillsRank > 0 && displaySkillsRank <= skillsCutoffValue;
-        } else { 
+        } else {
             isInQualifyingRank = false;
             isInSkillsRank = false;
-            qualCutoffValue = -1; 
-            skillsCutoffValue = -1; 
+            qualCutoffValue = -1;
+            skillsCutoffValue = -1;
             displayQualRank = overallRankingData.rank > 0 ? overallRankingData.rank : -1;
         }
 
         if (_programRules!.requiresRankInPositiveProgrammingSkills) {
+            // Always calculate the cutoff, even if team doesn't have a programming score
+            if (gradeSpecificQualifierCount > 0) {
+                programmingOnlyRankCutoffValue = max(1, applyProgramSpecificRounding(gradeSpecificQualifierCount * eligibilityThreshold, _selectedProgram!));
+            }
+
             final List<Map<String,dynamic>>? progOnlyPool = gradeProgrammingOnlyRankingsMap[gradeContextKey];
             if (teamProgrammingScore > 0 && progOnlyPool != null && progOnlyPool.isNotEmpty) {
                 final teamEntryInPool = progOnlyPool.firstWhere((e) => e['teamId'] == team.id, orElse: () => {});
                 teamProgrammingOnlyRank = teamEntryInPool['rank'] ?? -1;
-                programmingOnlyRankCutoffValue = max(1, applyProgramSpecificRounding(progOnlyPool.length * _programRules!.programmingSkillsRankThreshold, _selectedProgram!));
                 meetsProgOnlyRankCriterion = teamProgrammingOnlyRank > 0 && teamProgrammingOnlyRank <= programmingOnlyRankCutoffValue;
             } else {
                  meetsProgOnlyRankCriterion = false;
@@ -547,8 +1233,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
       bool isEligible = isInQualifyingRank &&
                         isInSkillsRank &&
                         meetsProgOnlyRankCriterion && // Add new criterion
-                        (_programRules!.requiresProgrammingSkills ? (teamProgrammingScore > 0) : true) &&
-                        (_programRules!.requiresDriverSkills ? (teamDriverScore > 0) : true);
+                        (_programRules!.requiresProgrammingSkills ? (teamProgrammingScore > 0) : true);
 
       return TeamSkills(
         team: team,
@@ -690,8 +1375,14 @@ class _EligibilityPageState extends State<EligibilityPage> {
   Widget _dataTableHeaders() {
     // ... (implementation is the same as previous correct version)
     bool showGradeColumn = isCombinedDivisionEvent;
-    int teamFlex = showGradeColumn ? 2 : 3; 
-    int orgFlex = showGradeColumn ? 2 : 3;   
+    int teamNumberFlex = 1;  // Team numbers are short (e.g., "9364A")
+    int teamNameFlex = showGradeColumn ? 2 : 3;  // Names need more space
+    int orgFlex = showGradeColumn ? 2 : 3;
+
+    // Determine driver/piloting label based on program
+    final bool isADC = _selectedProgram == RobotProgram.adc;
+    final String driverLabel = isADC ? 'Piloting' : 'Driver';
+    final String driverAttemptsLabel = isADC ? 'Piloting Attempts' : 'Driver Attempts';
 
     return Container(
       decoration: BoxDecoration(
@@ -699,18 +1390,46 @@ class _EligibilityPageState extends State<EligibilityPage> {
           borderRadius: BorderRadius.circular(8.0)),
       padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 0),
       child: Row(children: [
-        _buildSortableHeader(SortableColumn.teamNumber, 'Team (Num & Name)', teamFlex),
-        if (showGradeColumn)
+        if (_columnVisibility[SortableColumn.teamNumber] ?? true)
+          _buildSortableHeader(SortableColumn.teamNumber, 'Team #', teamNumberFlex),
+        if (_columnVisibility[SortableColumn.teamName] ?? true)
+          _buildSortableHeader(SortableColumn.teamName, 'Team Name', teamNameFlex),
+        if (showGradeColumn && (_columnVisibility[SortableColumn.grade] ?? true))
            _buildSortableHeader(SortableColumn.grade, 'Grade', 1, textAlign: TextAlign.center),
-        _buildSortableHeader(SortableColumn.organization, 'Organization', orgFlex),
-        _buildSortableHeader(SortableColumn.state, 'State', 1, textAlign: TextAlign.center),
-        _buildSortableHeader(SortableColumn.eligible, 'Eligible?', 1, textAlign: TextAlign.center),
-        _buildSortableHeader(SortableColumn.qualifierRank, 'Qual', 1, textAlign: TextAlign.center),
-        _buildSortableHeader(SortableColumn.skillsRank, 'Skills', 1, textAlign: TextAlign.center),
-        _buildSortableHeader(SortableColumn.driverScore, 'Pilot', 1, textAlign: TextAlign.center),
-        _buildSortableHeader(SortableColumn.pilotAttempts, 'Pilot Attempts', 1, textAlign: TextAlign.center),
-        _buildSortableHeader(SortableColumn.programmingScore, 'Auton', 1, textAlign: TextAlign.center),
-        _buildSortableHeader(SortableColumn.autonAttempts, 'Auton Attempts', 1, textAlign: TextAlign.center),
+        if (_columnVisibility[SortableColumn.organization] ?? true)
+          _buildSortableHeader(SortableColumn.organization, 'Organization', orgFlex),
+        if (_columnVisibility[SortableColumn.state] ?? true)
+          _buildSortableHeader(SortableColumn.state, 'State', 1, textAlign: TextAlign.center),
+        if (_columnVisibility[SortableColumn.eligible] ?? true)
+          _buildSortableHeader(SortableColumn.eligible, 'Eligible?', 1, textAlign: TextAlign.center),
+        if (_columnVisibility[SortableColumn.qualifierRank] ?? true)
+          _buildSortableHeader(SortableColumn.qualifierRank, 'Qual', 1, textAlign: TextAlign.center),
+        if (_columnVisibility[SortableColumn.skillsRank] ?? true)
+          _buildSortableHeader(SortableColumn.skillsRank, 'Skills', 1, textAlign: TextAlign.center),
+        if (_columnVisibility[SortableColumn.driverScore] ?? true)
+          _buildSortableHeader(SortableColumn.driverScore, driverLabel, 1, textAlign: TextAlign.center),
+        if (_columnVisibility[SortableColumn.pilotAttempts] ?? true)
+          _buildSortableHeader(SortableColumn.pilotAttempts, driverAttemptsLabel, 1, textAlign: TextAlign.center),
+        if (_columnVisibility[SortableColumn.programmingScore] ?? true)
+          _buildSortableHeader(SortableColumn.programmingScore, 'Auton', 1, textAlign: TextAlign.center),
+        if (_columnVisibility[SortableColumn.autonAttempts] ?? true)
+          _buildSortableHeader(SortableColumn.autonAttempts, 'Auton Attempts', 1, textAlign: TextAlign.center),
+        if (_columnVisibility[SortableColumn.details] ?? true)
+          Expanded(
+            flex: 1,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+              child: Text(
+                'Details',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+          ),
       ]),
     );
   }
@@ -718,51 +1437,119 @@ class _EligibilityPageState extends State<EligibilityPage> {
   Widget _dataRowWidget(TeamSkills record) {
     // ... (implementation is the same as previous correct version)
     final isEligible = record.eligible;
-    final Color rowBgColor = isEligible
+
+    // Eligibility-based color (existing logic)
+    final Color eligibilityColor = isEligible
         ? Colors.green.withAlpha(40)
         : (record.inRank || record.inSkill ? Colors.orange.withAlpha(30) : Colors.transparent);
+
+    // Manual highlight color (NEW)
+    final int colorIndex = _rowColorState[record.team.id] ?? 0;
+    final Color manualHighlight = colorIndex > 0
+        ? _rowHighlightColors[colorIndex].withAlpha(50)
+        : Colors.transparent;
+
+    // Manual highlight takes precedence when set
+    final Color rowBgColor = colorIndex > 0 ? manualHighlight : eligibilityColor;
+
     bool showGradeColumn = isCombinedDivisionEvent;
-    int teamFlex = showGradeColumn ? 2 : 3;
+    int teamNumberFlex = 1;
+    int teamNameFlex = showGradeColumn ? 2 : 3;
     int orgFlex = showGradeColumn ? 2 : 3;
 
     return Material(
       color: rowBgColor,
       child: InkWell(
+        onTap: () async {  // NEW: Add tap handler for color cycling
+          final int currentIndex = _rowColorState[record.team.id] ?? 0;
+          final int nextIndex = (currentIndex + 1) % _rowHighlightColors.length;
+
+          setState(() {
+            if (nextIndex == 0) {
+              _rowColorState.remove(record.team.id);
+            } else {
+              _rowColorState[record.team.id] = nextIndex;
+            }
+          });
+
+          await _saveRowColorState();
+        },
         child: Container(
           padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
           decoration: BoxDecoration(border: Border(
               bottom: BorderSide(color: Colors.white.withAlpha(25), width: 0.5))),
           child: Row(children: [
-            Expanded(flex: teamFlex, child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _TableDataCell(record.team.number,
-                      isBold: true,
-                      color: isEligible ? Colors.lightGreenAccent.shade100 : Colors.white),
-                  Text(record.team.name, style: const TextStyle(fontSize: 11, color: Colors.white70), overflow: TextOverflow.ellipsis),
-                ])),
-            if (showGradeColumn)
+            if (_columnVisibility[SortableColumn.teamNumber] ?? true)
+              Expanded(
+                flex: teamNumberFlex,
+                child: _TableDataCell(
+                  record.team.number,
+                  isBold: true,
+                  color: isEligible ? Colors.lightGreenAccent.shade100 : Colors.white
+                )
+              ),
+            if (_columnVisibility[SortableColumn.teamName] ?? true)
+              Expanded(
+                flex: teamNameFlex,
+                child: Row(
+                  children: [
+                    Expanded(child: _TableDataCell(record.team.name, fontSize: 12)),
+                    if (_teamAwards.containsKey(record.team.id))
+                      Tooltip(
+                        message: _teamAwards[record.team.id]!,
+                        child: Icon(
+                          Icons.emoji_events,
+                          size: 16,
+                          color: Colors.amber.shade300,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            if (showGradeColumn && (_columnVisibility[SortableColumn.grade] ?? true))
               Expanded(flex: 1, child: _TableDataCell(record.team.grade.isNotEmpty ? record.team.grade : "N/A", textAlign: TextAlign.center)),
-            Expanded(flex: orgFlex, child: _TableDataCell(record.team.organization, fontSize: 12)),
-            Expanded(flex: 1, child: _TableDataCell(record.team.state, textAlign: TextAlign.center)),
-            Expanded(
-              flex: 1, 
-              child: Icon(
-                isEligible ? Icons.check_circle_outline : Icons.highlight_off_outlined,
-                color: isEligible ? Colors.greenAccent.shade100 : Colors.redAccent.shade100.withAlpha(180),
-                size: 18,
-              )
-            ),
-            Expanded(flex: 1, child: _TableDataCell(_formatRank(record.qualifierRank),
-                color: record.inRank ? Colors.lightGreenAccent.shade100 : Colors.orangeAccent.shade100,
-                textAlign: TextAlign.center)),
-            Expanded(flex: 1, child: _TableDataCell(_formatRank(record.skillsRank),
-                color: record.inSkill ? Colors.lightGreenAccent.shade100 : Colors.orangeAccent.shade100,
-                textAlign: TextAlign.center)),
-            Expanded(flex: 1, child: _TableDataCell(record.driverScore.toString(), textAlign: TextAlign.center)),
-            Expanded(flex: 1, child: _TableDataCell(record.driverAttempts.toString(), textAlign: TextAlign.center)), 
-            Expanded(flex: 1, child: _TableDataCell(record.programmingScore.toString(), textAlign: TextAlign.center)),
-            Expanded(flex: 1, child: _TableDataCell(record.programmingAttempts.toString(), textAlign: TextAlign.center)), 
+            if (_columnVisibility[SortableColumn.organization] ?? true)
+              Expanded(flex: orgFlex, child: _TableDataCell(record.team.organization, fontSize: 12)),
+            if (_columnVisibility[SortableColumn.state] ?? true)
+              Expanded(flex: 1, child: _TableDataCell(record.team.state, textAlign: TextAlign.center)),
+            if (_columnVisibility[SortableColumn.eligible] ?? true)
+              Expanded(
+                flex: 1,
+                child: Icon(
+                  isEligible ? Icons.check_circle_outline : Icons.highlight_off_outlined,
+                  color: isEligible ? Colors.greenAccent.shade100 : Colors.redAccent.shade100.withAlpha(180),
+                  size: 18,
+                )
+              ),
+            if (_columnVisibility[SortableColumn.qualifierRank] ?? true)
+              Expanded(flex: 1, child: _TableDataCell(_formatRank(record.qualifierRank),
+                  color: record.inRank ? Colors.lightGreenAccent.shade100 : Colors.orangeAccent.shade100,
+                  textAlign: TextAlign.center)),
+            if (_columnVisibility[SortableColumn.skillsRank] ?? true)
+              Expanded(flex: 1, child: _TableDataCell(_formatRank(record.skillsRank),
+                  color: record.inSkill ? Colors.lightGreenAccent.shade100 : Colors.orangeAccent.shade100,
+                  textAlign: TextAlign.center)),
+            if (_columnVisibility[SortableColumn.driverScore] ?? true)
+              Expanded(flex: 1, child: _TableDataCell(record.driverScore.toString(), textAlign: TextAlign.center)),
+            if (_columnVisibility[SortableColumn.pilotAttempts] ?? true)
+              Expanded(flex: 1, child: _TableDataCell(record.driverAttempts.toString(), textAlign: TextAlign.center)),
+            if (_columnVisibility[SortableColumn.programmingScore] ?? true)
+              Expanded(flex: 1, child: _TableDataCell(record.programmingScore.toString(), textAlign: TextAlign.center)),
+            if (_columnVisibility[SortableColumn.autonAttempts] ?? true)
+              Expanded(flex: 1, child: _TableDataCell(record.programmingAttempts.toString(), textAlign: TextAlign.center)),
+            if (_columnVisibility[SortableColumn.details] ?? true)
+              Expanded(
+                flex: 1,
+                child: Center(
+                  child: IconButton(
+                    icon: const Icon(Icons.info_outline, size: 18),
+                    onPressed: () => _showEligibilityDetailDialog(record),
+                    tooltip: 'View Eligibility Details',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ),
+              ),
           ]),
         ),
       ),
@@ -944,6 +1731,9 @@ class _EligibilityPageState extends State<EligibilityPage> {
           case SortableColumn.teamNumber:
             compareResult = a.team.number.compareTo(b.team.number);
             break;
+          case SortableColumn.teamName:
+            compareResult = a.team.name.compareTo(b.team.name);
+            break;
           case SortableColumn.grade:
             compareResult = a.team.grade.compareTo(b.team.grade);
             break;
@@ -979,6 +1769,10 @@ class _EligibilityPageState extends State<EligibilityPage> {
             break;
           case SortableColumn.autonAttempts:
             compareResult = a.programmingAttempts.compareTo(b.programmingAttempts);
+            break;
+          case SortableColumn.details:
+            // Details column is not sortable, no comparison needed
+            compareResult = 0;
             break;
         }
         return _sortAscending ? compareResult : -compareResult;
@@ -1019,26 +1813,24 @@ class _EligibilityPageState extends State<EligibilityPage> {
           ]),
           const SizedBox(height: 12),
           Row(children: [
-            Expanded(child: DropdownButtonFormField<EventInfo>(
-                decoration: InputDecoration(
-                    labelText: 'Or Select Recent Event (${_selectedSeason?.name ?? ""})',
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(10.0)),
-                    prefixIcon: const Icon(Icons.event, color: Colors.blueAccent),
-                    isDense: true),
-                isExpanded: true, value: selectedEvent,
-                dropdownColor: Theme.of(context).colorScheme.surface,
-                items: events.map((e) {
-                  final dateLabel = '${e.start.month}/${e.start.day}/${e.start.year}';
-                  return DropdownMenuItem(value: e, child: Text('${e.sku} – ${e.name} ($dateLabel)', overflow: TextOverflow.ellipsis));
-                }).toList(),
-                onChanged: (e) async {
-                  if (e != null) {
-                    if (!mounted) return;
-                    setState(() { selectedEvent = e; skuCtrl.text = e.sku; });
-                    await _loadAllDataForEvent(e.id);
-                  }
-                },
-                style: TextStyle(color: Theme.of(context).colorScheme.onSurface))),
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _showEventSelectorDialog,
+                icon: const Icon(Icons.event, color: Colors.blueAccent),
+                label: Text(
+                  selectedEvent != null
+                      ? '${selectedEvent!.sku} – ${selectedEvent!.name}'
+                      : 'Select Recent Event (${_selectedSeason?.name ?? ""})',
+                  overflow: TextOverflow.ellipsis,
+                ),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+                  alignment: Alignment.centerLeft,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10.0)),
+                  side: BorderSide(color: Theme.of(context).colorScheme.outline),
+                ),
+              ),
+            ),
             if (divisions.length > 1) ...[
               const SizedBox(width: 12),
               Expanded(flex: 0, child: DropdownButtonFormField<Division>(
@@ -1088,8 +1880,12 @@ class _EligibilityPageState extends State<EligibilityPage> {
           }
         }
       },
-      child: Scaffold(
-        body: Stack(children: [
+      child: MediaQuery(
+        data: MediaQuery.of(context).copyWith(
+          textScaler: TextScaler.linear(_textScaleFactor),
+        ),
+        child: Scaffold(
+          body: Stack(children: [
           CustomScrollView(slivers: [
             SliverAppBar(
               expandedHeight: 75.0, floating: true, pinned: true,
@@ -1106,8 +1902,18 @@ class _EligibilityPageState extends State<EligibilityPage> {
                     begin: Alignment.topLeft, end: Alignment.bottomRight))),
               ),
               actions: [
-                IconButton(icon: const Icon(Icons.refresh), onPressed: selectedEvent != null ? () => _loadAllDataForEvent(selectedEvent!.id) : null,
+                IconButton(
+                  icon: const Icon(Icons.emoji_events_outlined),
+                  onPressed: selectedEvent != null && teams.isNotEmpty
+                    ? _showAwardAssignmentDialog
+                    : null,
+                  tooltip: 'Assign Awards',
+                  color: Theme.of(context).colorScheme.onPrimary
+                ),
+                IconButton(icon: const Icon(Icons.refresh), onPressed: selectedEvent != null ? () => _loadAllDataForEvent(selectedEvent!.id, isAutoReload: true) : null,
                     tooltip: 'Refresh Data (F2 or Ctrl+R)', color: Theme.of(context).colorScheme.onPrimary),
+                IconButton(icon: const Icon(Icons.view_column_outlined), onPressed: _showColumnVisibilityDialog,
+                    tooltip: 'Show/Hide Columns', color: Theme.of(context).colorScheme.onPrimary),
                 IconButton(icon: const Icon(Icons.settings), onPressed: _showSettingsDialog,
                     tooltip: 'Settings (Program & Season)', color: Theme.of(context).colorScheme.onPrimary),
               ]),
@@ -1131,6 +1937,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
                   Text('Loading data...', style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white)),
                 ])),
         ]),
+        ),
       ),
     );
   }
@@ -1141,7 +1948,9 @@ class _EligibilityPageState extends State<EligibilityPage> {
     Season? tempSelectedSeason = _selectedSeason;
     List<Season> tempAvailableSeasons = List.from(_availableSeasons);
     bool tempAutoReloadEnabled = _isAutoReloadEnabled;
-    bool tempMobileViewEnabled = _isMobileViewEnabled; 
+    bool tempMobileViewEnabled = _isMobileViewEnabled;
+    double tempTextScaleFactor = _textScaleFactor;
+    Map<RobotProgram, bool> tempProgramEnabled = Map.from(_programEnabled);
     bool dialogIsLoading = false;
 
     if (!mounted) return;
@@ -1160,7 +1969,9 @@ class _EligibilityPageState extends State<EligibilityPage> {
                       DropdownButtonFormField<RobotProgram>(
                           decoration: const InputDecoration(labelText: 'Select Program'),
                           value: tempSelectedProgram,
-                          items: RobotProgram.values.map((program) =>
+                          items: RobotProgram.values
+                              .where((program) => tempProgramEnabled[program] ?? true)
+                              .map((program) =>
                               DropdownMenuItem(value: program, child: Text(program.name))).toList(),
                           onChanged: (program) async {
                             if (program != null) {
@@ -1226,6 +2037,22 @@ class _EligibilityPageState extends State<EligibilityPage> {
                         dense: true,
                         contentPadding: EdgeInsets.zero,
                       ),
+                      const SizedBox(height: 10),
+                      const Divider(),
+                      const SizedBox(height: 10),
+                      Text('Text Size', style: Theme.of(context).textTheme.bodySmall),
+                      Slider(
+                        value: tempTextScaleFactor,
+                        min: 0.8,
+                        max: 1.5,
+                        divisions: 7,
+                        label: "${(tempTextScaleFactor * 100).toStringAsFixed(0)}%",
+                        onChanged: (double value) {
+                          setStateDialog(() {
+                            tempTextScaleFactor = value;
+                          });
+                        },
+                      ),
                     ]),
             ),
             actions: [
@@ -1249,19 +2076,22 @@ class _EligibilityPageState extends State<EligibilityPage> {
                           await prefs.setInt('selectedSeasonId', tempSelectedSeason!.id);
                           await prefs.setBool(_autoReloadPrefKey, tempAutoReloadEnabled);
                           await prefs.setBool(_mobileViewPrefKey, tempMobileViewEnabled);
+                          await prefs.setDouble(_textScalePrefKey, tempTextScaleFactor);
 
                           bool needsEventReload = _selectedProgram != tempSelectedProgram || _selectedSeason != tempSelectedSeason;
                           bool autoReloadChanged = _isAutoReloadEnabled != tempAutoReloadEnabled;
                           bool mobileViewChanged = _isMobileViewEnabled != tempMobileViewEnabled;
-                          
+                          bool textSizeChanged = _textScaleFactor != tempTextScaleFactor;
+
                           if (!mounted) return;
-                          setState(() { 
+                          setState(() {
                             _selectedProgram = tempSelectedProgram;
                             _programRules = ProgramRules.forProgram(_selectedProgram!);
                             _selectedSeason = tempSelectedSeason;
                             _availableSeasons = tempAvailableSeasons;
                             _isAutoReloadEnabled = tempAutoReloadEnabled;
-                            _isMobileViewEnabled = tempMobileViewEnabled; 
+                            _isMobileViewEnabled = tempMobileViewEnabled;
+                            _textScaleFactor = tempTextScaleFactor;
                             api = RobotEventsApiService(program: _selectedProgram!, season: _selectedSeason!);
                             if (needsEventReload) { _clearEventData(resetSort: true); events = []; skuCtrl.clear(); searchCtrl.clear(); selectedEvent=null; }
                           });
@@ -1269,9 +2099,9 @@ class _EligibilityPageState extends State<EligibilityPage> {
                           
                           if (needsEventReload) {
                             await _loadEvents();
-                          } else if (autoReloadChanged || mobileViewChanged) { 
-                            _manageAutoReloadTimer(); 
-                            if(mobileViewChanged && mounted) setState((){}); 
+                          } else if (autoReloadChanged || mobileViewChanged || textSizeChanged) {
+                            _manageAutoReloadTimer();
+                            if(mounted) setState((){});
                           }
                         }
                       : null,
@@ -1282,10 +2112,495 @@ class _EligibilityPageState extends State<EligibilityPage> {
       },
     );
   }
+
+  Future<void> _showColumnVisibilityDialog() async {
+    await showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('Show/Hide Columns'),
+          content: SingleChildScrollView(
+            child: StatefulBuilder(
+              builder: (context, setStateDialog) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: SortableColumn.values.map((column) {
+                    return CheckboxListTile(
+                      title: Text(_getColumnDisplayName(column)),
+                      value: _columnVisibility[column] ?? true,
+                      onChanged: (bool? newValue) async {
+                        if (newValue != null) {
+                          setStateDialog(() {
+                            _columnVisibility[column] = newValue;
+                          });
+                          await _saveColumnVisibility();
+                          if (mounted) setState(() {});
+                        }
+                      },
+                      dense: true,
+                      contentPadding: EdgeInsets.zero,
+                    );
+                  }).toList(),
+                );
+              },
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showAwardAssignmentDialog() async {
+    // Check if awards have been loaded
+    if (awards.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No awards available for this event yet. Awards may not be finalized.'),
+          duration: Duration(seconds: 3),
+        ),
+      );
+      return;
+    }
+
+    await showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('Assign Awards to Teams'),
+          content: SizedBox(
+            width: double.maxFinite,
+            height: 500,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Info banner: "This only affects this webpage"
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.withAlpha(40),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.blue.withAlpha(100)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.info_outline, color: Colors.blue.shade300, size: 20),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'This only affects this webpage and nothing else. Awards are stored locally.',
+                          style: TextStyle(fontSize: 12, color: Colors.blue.shade100),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Team list with award dropdowns
+                Expanded(
+                  child: StatefulBuilder(
+                    builder: (context, setStateDialog) {
+                      final sortedTeams = List<Team>.from(teams)
+                        ..sort((a, b) => a.number.compareTo(b.number));
+
+                      // Get unique award titles from the awards list
+                      final availableAwards = awards.map((a) => a.title).toSet().toList()
+                        ..sort();
+
+                      return ListView.builder(
+                        itemCount: sortedTeams.length,
+                        itemBuilder: (context, index) {
+                          final team = sortedTeams[index];
+                          final currentAward = _teamAwards[team.id];
+
+                          return Card(
+                            margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 0),
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              child: Row(
+                                children: [
+                                  // Team number and name
+                                  Expanded(
+                                    flex: 2,
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+                                        Text(team.number, style: const TextStyle(
+                                          fontWeight: FontWeight.bold, fontSize: 14)),
+                                        Text(team.name, style: TextStyle(
+                                          fontSize: 11, color: Colors.grey.shade400),
+                                          overflow: TextOverflow.ellipsis),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+
+                                  // Award dropdown
+                                  Expanded(
+                                    flex: 3,
+                                    child: DropdownButtonFormField<String>(
+                                      value: currentAward,
+                                      decoration: InputDecoration(
+                                        hintText: 'Select award...',
+                                        isDense: true,
+                                        contentPadding: const EdgeInsets.symmetric(
+                                          horizontal: 10, vertical: 8),
+                                        border: OutlineInputBorder(
+                                          borderRadius: BorderRadius.circular(6)),
+                                      ),
+                                      items: [
+                                        const DropdownMenuItem<String>(
+                                          value: null,
+                                          child: Text('None', style: TextStyle(fontStyle: FontStyle.italic)),
+                                        ),
+                                        ...availableAwards.map((award) =>
+                                          DropdownMenuItem<String>(
+                                            value: award,
+                                            child: Text(award, style: const TextStyle(fontSize: 13)),
+                                          )
+                                        ),
+                                      ],
+                                      onChanged: (String? newAward) async {
+                                        setStateDialog(() {
+                                          if (newAward == null) {
+                                            _teamAwards.remove(team.id);
+                                          } else {
+                                            _teamAwards[team.id] = newAward;
+                                          }
+                                        });
+                                        await _saveTeamAwards();
+                                        if (mounted) setState(() {});
+                                      },
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Future<void> _showEligibilityDetailDialog(TeamSkills record) async {
+    final bool isADC = _selectedProgram == RobotProgram.adc;
+    final rules = _programRules;
+
+    await showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: Row(
+            children: [
+              Icon(
+                record.eligible ? Icons.check_circle : Icons.cancel,
+                color: record.eligible ? Colors.green : Colors.red,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '${record.team.number} - ${record.team.name}',
+                  style: const TextStyle(fontSize: 18),
+                ),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: double.maxFinite,
+            child: Scrollbar(
+              thumbVisibility: true,
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.only(right: 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                  // Eligibility Status Header
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: record.eligible
+                        ? Colors.green.withAlpha(40)
+                        : Colors.red.withAlpha(40),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: record.eligible ? Colors.green : Colors.red,
+                        width: 2,
+                      ),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              record.eligible ? Icons.check_circle : Icons.cancel,
+                              color: record.eligible ? Colors.green : Colors.red,
+                              size: 32,
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                record.eligible
+                                    ? 'ELIGIBLE'
+                                    : 'NOT ELIGIBLE',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 20,
+                                  color: record.eligible ? Colors.green : Colors.red,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'For ${_selectedProgram?.awardName ?? "Award"}',
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+
+                  // Eligibility Requirements Summary
+                  Text(
+                    'Eligibility Requirements',
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  _buildRequirementCard(
+                    'Qualifier Rank',
+                    '${_formatRank(record.qualifierRank)} of ${record.qualifierRankCutoff}',
+                    'Must be in top 40% (≤ ${record.qualifierRankCutoff})',
+                    record.inRank,
+                  ),
+                  const SizedBox(height: 8),
+                  _buildRequirementCard(
+                    'Skills Rank',
+                    '${_formatRank(record.skillsRank)} of ${record.skillsRankCutoff}',
+                    'Must be in top 40% (≤ ${record.skillsRankCutoff})',
+                    record.inSkill,
+                  ),
+                  const SizedBox(height: 8),
+                  if (rules?.requiresProgrammingSkills ?? false)
+                    _buildRequirementCard(
+                      'Programming Skills',
+                      record.programmingScore > 0 ? '${record.programmingScore} points' : 'No score',
+                      'Must have a positive programming score',
+                      record.programmingScore > 0,
+                    ),
+                  const SizedBox(height: 8),
+                  if (rules?.requiresRankInPositiveProgrammingSkills ?? false)
+                    _buildRequirementCard(
+                      'Programming-Only Rank',
+                      '${_formatRank(record.programmingOnlyRank)} of ${record.programmingOnlyRankCutoff}',
+                      'Must be in top 40% of teams with programming scores (≤ ${record.programmingOnlyRankCutoff})',
+                      record.meetsProgrammingOnlyRankCriterion,
+                    ),
+                  const SizedBox(height: 24),
+
+                  // Team Details Section
+                  ExpansionTile(
+                    title: const Text('Team Information', style: TextStyle(fontWeight: FontWeight.bold)),
+                    initiallyExpanded: false,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        child: Column(
+                          children: [
+                            _buildDetailRow('Team Number', record.team.number),
+                            _buildDetailRow('Team Name', record.team.name),
+                            _buildDetailRow('Organization', record.team.organization),
+                            _buildDetailRow('Grade', record.team.grade.isNotEmpty ? record.team.grade : 'N/A'),
+                            _buildDetailRow('Location', '${record.team.city}, ${record.team.state}'),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const Divider(),
+
+                  // Skills Details Section
+                  ExpansionTile(
+                    title: const Text('Skills Scores Details', style: TextStyle(fontWeight: FontWeight.bold)),
+                    initiallyExpanded: false,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        child: Column(
+                          children: [
+                            _buildDetailRow(
+                              isADC ? 'Piloting Score' : 'Driver Score',
+                              '${record.driverScore} pts (${record.driverAttempts} attempts)',
+                            ),
+                            _buildDetailRow(
+                              'Programming Score',
+                              '${record.programmingScore} pts (${record.programmingAttempts} attempts)',
+                            ),
+                            _buildDetailRow(
+                              'Combined Score',
+                              '${record.driverScore + record.programmingScore} pts',
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildRequirementCard(String title, String value, String description, bool met) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: met ? Colors.green.withAlpha(20) : Colors.red.withAlpha(20),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: met ? Colors.green.withAlpha(100) : Colors.red.withAlpha(100),
+          width: 1,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            met ? Icons.check_circle : Icons.cancel,
+            color: met ? Colors.green : Colors.red,
+            size: 24,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: met ? Colors.green : Colors.red,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  description,
+                  style: TextStyle(
+                    fontSize: 11,
+                    color: Colors.grey.shade400,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDetailRow(String label, String value, {bool highlight = false, Color? highlightColor}) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 14,
+              color: Colors.grey.shade400,
+            ),
+          ),
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: highlight ? FontWeight.bold : FontWeight.normal,
+              color: highlight ? highlightColor : null,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _getColumnDisplayName(SortableColumn column) {
+    final bool isADC = _selectedProgram == RobotProgram.adc;
+    switch (column) {
+      case SortableColumn.teamNumber:
+        return 'Team Number';
+      case SortableColumn.teamName:
+        return 'Team Name';
+      case SortableColumn.grade:
+        return 'Grade';
+      case SortableColumn.organization:
+        return 'Organization';
+      case SortableColumn.state:
+        return 'State';
+      case SortableColumn.qualifierRank:
+        return 'Qualifier Rank';
+      case SortableColumn.skillsRank:
+        return 'Skills Rank';
+      case SortableColumn.driverScore:
+        return isADC ? 'Piloting Score' : 'Driver Score';
+      case SortableColumn.programmingScore:
+        return 'Programming Score';
+      case SortableColumn.eligible:
+        return 'Eligible';
+      case SortableColumn.pilotAttempts:
+        return isADC ? 'Piloting Attempts' : 'Driver Attempts';
+      case SortableColumn.autonAttempts:
+        return 'Programming Attempts';
+      case SortableColumn.details:
+        return 'Details';
+    }
+  }
 }
 
 class _TableDataCell extends StatelessWidget {
-  // ... (implementation is the same as previous correct version)
   final String text;
   final Color? color;
   final bool isBold;

@@ -8,7 +8,7 @@ class AllAroundApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'All-Around Eligibility',
+        title: 'RECF Award Deliberation Tool',
         theme: ThemeData(
           brightness: Brightness.dark,
           useMaterial3: true,

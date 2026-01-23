@@ -1,6 +1,6 @@
 import 'dart:math';
 
-// --- Rounding Helper Functions --- (remain the same)
+// --- Rounding Helper Functions ---
 int roundHalfUp(double value) {
   return value.round();
 }
@@ -27,22 +27,24 @@ int applyProgramSpecificRounding(double calculatedValue, RobotProgram program) {
 }
 // --- End Rounding Helper Functions ---
 
-enum RobotProgram { 
-  v5rc(id: 1, name: 'V5RC', skuPrefix: 'RE-V5RC-', awardName: 'Excellence Award'),
-  viqrc(id: 41, name: 'VIQRC', skuPrefix: 'RE-VIQRC-', awardName: 'Excellence Award'),
-  vurc(id: 4, name: 'VURC', skuPrefix: 'RE-VURC-', awardName: 'Excellence Award'),
-  adc(id: 44, name: 'ADC', skuPrefix: 'RE-ADC-', awardName: 'All-Around Champion');
+enum RobotProgram {
+  v5rc(id: 1, name: 'V5RC', skuPrefix: 'RE-V5RC-', awardName: 'Excellence Award', enabledByDefault: true),
+  viqrc(id: 41, name: 'VIQRC', skuPrefix: 'RE-VIQRC-', awardName: 'Excellence Award', enabledByDefault: true),
+  vurc(id: 4, name: 'VURC', skuPrefix: 'RE-VURC-', awardName: 'Excellence Award', enabledByDefault: true),
+  adc(id: 44, name: 'ADC', skuPrefix: 'RE-ADC-', awardName: 'All-Around Champion', enabledByDefault: false);
 
   final int id;
   final String name;
   final String skuPrefix;
   final String awardName;
+  final bool enabledByDefault;
 
   const RobotProgram({
     required this.id,
     required this.name,
     required this.skuPrefix,
     required this.awardName,
+    required this.enabledByDefault,
   });
 }
 
@@ -68,30 +70,30 @@ class ProgramRules {
     switch (program) {
       case RobotProgram.v5rc:
         return const ProgramRules(
-          threshold: 0.40, // Assuming main threshold is now 40%
-          requiresDriverSkills: true,
-          requiresProgrammingSkills: true, // Still need a prog score (e.g. > 0 for skills)
+          threshold: 0.40,
+          requiresDriverSkills: false,
+          requiresProgrammingSkills: true,
           hasMiddleSchoolHighSchoolDivisions: true,
-          requiresRankInPositiveProgrammingSkills: true, 
-          programmingSkillsRankThreshold: 0.40,        
+          requiresRankInPositiveProgrammingSkills: true,
+          programmingSkillsRankThreshold: 0.40,
         );
       case RobotProgram.viqrc:
         return const ProgramRules(
-          threshold: 0.40, // Assuming main threshold is now 40%
-          requiresDriverSkills: true,
+          threshold: 0.40,
+          requiresDriverSkills: false,
           requiresProgrammingSkills: true,
           hasMiddleSchoolHighSchoolDivisions: true,
-          requiresRankInPositiveProgrammingSkills: true, 
-          programmingSkillsRankThreshold: 0.40,        
+          requiresRankInPositiveProgrammingSkills: true,
+          programmingSkillsRankThreshold: 0.40,
         );
       case RobotProgram.vurc:
         return const ProgramRules(
-          threshold: 0.40, // Assuming main threshold is now 40%
-          requiresDriverSkills: true,
+          threshold: 0.40,
+          requiresDriverSkills: false,
           requiresProgrammingSkills: true,
           hasMiddleSchoolHighSchoolDivisions: false,
-          requiresRankInPositiveProgrammingSkills: true, 
-          programmingSkillsRankThreshold: 0.40,        
+          requiresRankInPositiveProgrammingSkills: true,
+          programmingSkillsRankThreshold: 0.40,
         );
       case RobotProgram.adc:
         return const ProgramRules(
@@ -100,13 +102,13 @@ class ProgramRules {
           requiresProgrammingSkills: true, 
           hasMiddleSchoolHighSchoolDivisions: false,
           requiresRankInPositiveProgrammingSkills: false, // ADC does not use this new specific rule
-          programmingSkillsRankThreshold: 0.4, // Default, but unused if above is false
+          programmingSkillsRankThreshold: 0.5,  // Unused but here in case future changes
         );
     }
   }
 }
 
-class Season { /* ... remains the same ... */ 
+class Season { 
   final int id;
   final String name;
   final String programName;
@@ -125,7 +127,7 @@ class Season { /* ... remains the same ... */
   int get hashCode => id.hashCode;
 }
 
-class Ranking { /* ... remains the same ... */ 
+class Ranking {
   final int teamId;
   final int rank;
 
@@ -137,25 +139,62 @@ class Ranking { /* ... remains the same ... */
       );
 }
 
-class EventInfo { /* ... remains the same ... */
+class EventInfo {
   final int id;
   final String sku;
   final String name;
   final DateTime start;
+  final double? latitude;
+  final double? longitude;
+  final String city;
+  final String region;
+  final String country;
+  final bool ongoing;
+  final bool awardsFinalized;
 
   EventInfo({
     required this.id,
     required this.sku,
     required this.name,
     required this.start,
+    this.latitude,
+    this.longitude,
+    this.city = '',
+    this.region = '',
+    this.country = '',
+    this.ongoing = false,
+    this.awardsFinalized = false,
   });
 
-  factory EventInfo.fromJson(Map<String, dynamic> j) => EventInfo(
-        id: j['id'] as int,
-        sku: j['sku'] as String? ?? '',
-        name: j['name'] as String? ?? '',
-        start: DateTime.parse(j['start'] as String),
-      );
+  factory EventInfo.fromJson(Map<String, dynamic> j) {
+    final location = j['location'] as Map<String, dynamic>?;
+    final coordinates = location?['coordinates'] as Map<String, dynamic>?;
+
+    return EventInfo(
+      id: j['id'] as int,
+      sku: j['sku'] as String? ?? '',
+      name: j['name'] as String? ?? '',
+      start: DateTime.parse(j['start'] as String),
+      latitude: coordinates?['lat'] as double?,
+      longitude: coordinates?['lon'] as double?,
+      city: location?['city'] as String? ?? '',
+      region: location?['region'] as String? ?? '',
+      country: location?['country'] as String? ?? '',
+      ongoing: j['ongoing'] as bool? ?? false,
+      awardsFinalized: j['awards_finalized'] as bool? ?? false,
+    );
+  }
+
+  // Helper to check if event is canceled
+  bool get isCanceled => name.trim().toUpperCase().startsWith('CANCELED');
+
+  // Helper to get event status
+  String get status {
+    if (isCanceled) return 'Canceled';
+    if (awardsFinalized) return 'Completed';
+    if (ongoing) return 'Live';
+    return 'Upcoming';
+  }
 
   @override
   bool operator ==(Object other) => other is EventInfo && other.id == id && other.sku == sku;
@@ -163,7 +202,7 @@ class EventInfo { /* ... remains the same ... */
   int get hashCode => id.hashCode;
 }
 
-class Division { /* ... remains the same ... */
+class Division {
   final int id;
   final String name;
   Division({required this.id, required this.name});
@@ -173,7 +212,7 @@ class Division { /* ... remains the same ... */
       );
 }
 
-class Team { /* ... remains the same with city, state, country ... */
+class Team { 
   final int id;
   final String number;
   final String name;
@@ -209,7 +248,7 @@ class Team { /* ... remains the same with city, state, country ... */
   }
 }
 
-class RawSkill { /* ... remains the same, includes attempts ... */
+class RawSkill { 
   final int teamId;
   final String type; 
   final int rank;
@@ -238,7 +277,7 @@ class RawSkill { /* ... remains the same, includes attempts ... */
   }
 }
 
-class Award { /* ... remains the same ... */
+class Award { 
   final String title;
   Award({required this.title});
   factory Award.fromJson(Map<String, dynamic> j) =>
@@ -259,7 +298,7 @@ class TeamSkills {
   final int qualifierRankCutoff; 
   final int skillsRankCutoff;   
 
-  // New fields for specific programming skills ranking criterion
+ 
   final int programmingOnlyRank;
   final int programmingOnlyRankCutoff;
   final bool meetsProgrammingOnlyRankCriterion;

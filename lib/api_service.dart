@@ -33,10 +33,50 @@ class RobotEventsApiService {
       '/seasons?program[]=$programId&per_page=250', Season.fromJson);
 
 
-  // Uses dynamic program.id and season.id
-  Future<List<EventInfo>> fetchEvents() => _getList(
-      '/events?program[]=${program.id}&season[]=${season.id}&per_page=250',
-      EventInfo.fromJson);
+  // Uses dynamic program.id and season.id with pagination
+  Future<List<EventInfo>> fetchEvents() async {
+    print('🔍 Fetching events for program=${program.id}, season=${season.id}');
+    List<EventInfo> all = [];
+    int page = 1;
+
+    while (true) {
+      final uri = Uri.parse('$_base/events?program[]=${program.id}&season[]=${season.id}&page=$page&per_page=250');
+      final resp = await http.get(uri, headers: {
+        'Authorization': 'Bearer $_token',
+        'Content-Type': 'application/json',
+      });
+
+      if (resp.statusCode != 200) {
+        print('❌ Events API error (${resp.statusCode}): ${resp.body}');
+        throw Exception('Failed to fetch events');
+      }
+
+      final json = jsonDecode(resp.body) as Map<String, dynamic>;
+      final data = json['data'] as List<dynamic>;
+
+      if (data.isEmpty) break;
+
+      all.addAll(data.map((e) => EventInfo.fromJson(e as Map<String, dynamic>)));
+
+      print('📄 Fetched page $page with ${data.length} events');
+
+      // Check if there are more pages using the meta information
+      final meta = json['meta'] as Map<String, dynamic>?;
+      if (meta != null) {
+        final currentPage = meta['current_page'] as int?;
+        final lastPage = meta['last_page'] as int?;
+        if (currentPage != null && lastPage != null && currentPage >= lastPage) {
+          break;
+        }
+      }
+
+      if (data.length < 250) break;
+      page++;
+    }
+
+    print('✅ Total events fetched: ${all.length}');
+    return all;
+  }
 
   // Uses dynamic program.id and season.id
   Future<EventInfo?> fetchEventBySku(String sku) => _getList(
