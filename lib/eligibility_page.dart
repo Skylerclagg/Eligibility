@@ -68,6 +68,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   static const String _autoReloadPrefKey = 'autoReloadEnabled';
 
   bool _eventHasSplitGradeAwards = false;
+  bool _forceSplitExcellence = false;
   bool _isMobileViewEnabled = false;
   static const String _mobileViewPrefKey = 'mobileViewEnabled';
 
@@ -1012,8 +1013,8 @@ class _EligibilityPageState extends State<EligibilityPage> {
   }
 
   bool get isCombinedDivisionEvent {
-    // ... (implementation is the same)
-    if (_programRules == null) return true; 
+    if (_programRules == null) return true;
+    if (_forceSplitExcellence) return false;
     if (!_programRules!.hasMiddleSchoolHighSchoolDivisions) {
       return true;
     }
@@ -1914,6 +1915,8 @@ class _EligibilityPageState extends State<EligibilityPage> {
                     tooltip: 'Refresh Data (F2 or Ctrl+R)', color: Theme.of(context).colorScheme.onPrimary),
                 IconButton(icon: const Icon(Icons.view_column_outlined), onPressed: _showColumnVisibilityDialog,
                     tooltip: 'Show/Hide Columns', color: Theme.of(context).colorScheme.onPrimary),
+                IconButton(icon: const Icon(Icons.build), onPressed: _showDevModeDialog,
+                    tooltip: 'Dev Mode', color: Theme.of(context).colorScheme.onPrimary),
                 IconButton(icon: const Icon(Icons.settings), onPressed: _showSettingsDialog,
                     tooltip: 'Settings (Program & Season)', color: Theme.of(context).colorScheme.onPrimary),
               ]),
@@ -1939,6 +1942,49 @@ class _EligibilityPageState extends State<EligibilityPage> {
         ]),
         ),
       ),
+    );
+  }
+
+  Future<void> _showDevModeDialog() async {
+    bool tempForceSplit = _forceSplitExcellence;
+    await showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: Row(children: [
+                Icon(Icons.build, color: Theme.of(context).colorScheme.primary),
+                const SizedBox(width: 8),
+                const Text('Dev Mode'),
+              ]),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SwitchListTile(
+                    title: const Text('Force Split Excellence'),
+                    subtitle: const Text('Calculate as split grade awards even if the event does not have them'),
+                    value: tempForceSplit,
+                    onChanged: (val) => setDialogState(() => tempForceSplit = val),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+                FilledButton(
+                  onPressed: () {
+                    setState(() {
+                      _forceSplitExcellence = tempForceSplit;
+                    });
+                    Navigator.pop(context);
+                  },
+                  child: const Text('Apply'),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
