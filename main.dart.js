@@ -39545,23 +39545,23 @@ wT(){var s=0,r=A.O(t.H),q=1,p=[],o=this,n,m,l,k,j,i
 var $async$wT=A.K(function(a,b){if(a===1){p.push(b)
 s=q}while(true)switch(s){case 0:q=3
 s=6
-return A.I(A.We(A.eV("http://ip-api.com/json/"),null),$async$wT)
+return A.I(A.We(A.eV("https://ipapi.co/json/"),null),$async$wT)
 case 6:n=b
 if(n.b===200){k=n
 m=t.P.a(B.av.jq(A.qk(A.qf(k.e)).dY(k.w),null))
-k=A.W0(J.fQ(m,"lat"))
+k=A.W0(J.fQ(m,"latitude"))
 o.k3=k==null?null:k
-k=A.W0(J.fQ(m,"lon"))
+k=A.W0(J.fQ(m,"longitude"))
 o.k4=k==null?null:k
-o.ok=A.bf(J.fQ(m,"regionName"))
-A.cM("\ud83d\udccd User location: "+A.k(J.fQ(m,"city"))+", "+A.k(J.fQ(m,"regionName"))+" (country: "+A.k(J.fQ(m,"country"))+")")
-A.cM('\ud83d\udccd User region for filtering: "'+A.k(o.ok)+'"')}q=1
+o.ok=A.bf(J.fQ(m,"region"))
+A.cM("User location: "+A.k(J.fQ(m,"city"))+", "+A.k(J.fQ(m,"region"))+" (country: "+A.k(J.fQ(m,"country_name"))+")")
+A.cM('User region for filtering: "'+A.k(o.ok)+'"')}q=1
 s=5
 break
 case 3:q=2
 i=p.pop()
 l=A.ak(i)
-A.cM("\u26a0\ufe0f Could not determine user location: "+A.k(l))
+A.cM("Could not determine user location: "+A.k(l))
 s=5
 break
 case 2:s=1
