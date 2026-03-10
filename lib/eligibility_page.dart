@@ -2,6 +2,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+// ignore: avoid_web_libraries_in_flutter
+import 'dart:html' as html;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -22,9 +24,10 @@ enum SortableColumn {
   eligible,
   grade,
   pilotAttempts,
+  programmingOnlyRank,
   autonAttempts,
-  details, // Not sortable, just for column visibility control
-  // We could add programmingOnlyRank for sorting if desired later
+  notebookStatus,
+  details,
 }
 
 class EligibilityPage extends StatefulWidget {
@@ -85,6 +88,9 @@ class _EligibilityPageState extends State<EligibilityPage> {
   Map<SortableColumn, bool> _columnVisibility = {};
   static const String _columnVisibilityPrefKey = 'columnVisibility';
 
+  bool _autoHighlightEnabled = true;
+  static const String _autoHighlightPrefKey = 'autoHighlightEnabled';
+
   // Row color cycling for manual highlighting
   Map<int, int> _rowColorState = {};  // teamId -> colorIndex (0=none, 1=green, 2=yellow, 3=red)
   static const String _rowColorStatePrefKey = 'rowColorState';
@@ -100,6 +106,12 @@ class _EligibilityPageState extends State<EligibilityPage> {
   // Award assignment system
   Map<int, String> _teamAwards = {};  // teamId -> awardName
   static const String _teamAwardsPrefKey = 'teamAwards';
+
+  // Notebook status system
+  // 0 = Not Set, 1 = Not Submitted, 2 = Developing, 3 = Fully Developed
+  Map<int, int> _teamNotebookStatus = {};  // teamId -> statusIndex
+  static const String _teamNotebookStatusPrefKey = 'teamNotebookStatus';
+  static const List<String> _notebookStatusLabels = ['Not Set', 'Not Submitted', 'Developing', 'Fully Developed', 'Top of the Rankings'];
 
 
   // Program enable/disable state
@@ -119,7 +131,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
   void _initializeColumnVisibility() {
     _columnVisibility = {
       for (var col in SortableColumn.values)
-        col: true // Default all columns to visible
+        col: col != SortableColumn.notebookStatus // Notebook hidden by default
     };
   }
 
@@ -199,6 +211,29 @@ class _EligibilityPageState extends State<EligibilityPage> {
     await prefs.setString(_teamAwardsPrefKey, jsonEncode(stringMap));
   }
 
+  Future<void> _loadTeamNotebookStatus(SharedPreferences prefs) async {
+    final String? saved = prefs.getString(_teamNotebookStatusPrefKey);
+    if (saved != null) {
+      try {
+        final Map<String, dynamic> savedMap = jsonDecode(saved);
+        _teamNotebookStatus = savedMap.map((key, value) =>
+          MapEntry(int.parse(key), value as int)
+        );
+      } catch (e) {
+        print('Failed to load notebook status: $e');
+        _teamNotebookStatus = {};
+      }
+    }
+  }
+
+  Future<void> _saveTeamNotebookStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    final Map<String, int> stringMap = _teamNotebookStatus.map(
+      (key, value) => MapEntry(key.toString(), value)
+    );
+    await prefs.setString(_teamNotebookStatusPrefKey, jsonEncode(stringMap));
+  }
+
   Future<void> _loadProgramEnabled(SharedPreferences prefs) async {
     final String? saved = prefs.getString(_programEnabledPrefKey);
     if (saved != null) {
@@ -234,20 +269,18 @@ class _EligibilityPageState extends State<EligibilityPage> {
 
   Future<void> _getUserLocation() async {
     try {
-      // Use ip-api.com to get approximate location from IP (free, no API key needed)
-      final response = await http.get(Uri.parse('http://ip-api.com/json/'));
+      // Use ipapi.co (supports HTTPS, works on GitHub Pages)
+      final response = await http.get(Uri.parse('https://ipapi.co/json/'));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
-        _userLatitude = (data['lat'] as num?)?.toDouble();
-        _userLongitude = (data['lon'] as num?)?.toDouble();
-        // RobotEvents API uses full state names, so we use 'regionName' instead of 'region'
-        // ip-api returns 'regionName' as the full name (e.g., "West Virginia", "California")
-        _userRegion = data['regionName'] as String?;
-        print('📍 User location: ${data['city']}, ${data['regionName']} (country: ${data['country']})');
-        print('📍 User region for filtering: "$_userRegion"');
+        _userLatitude = (data['latitude'] as num?)?.toDouble();
+        _userLongitude = (data['longitude'] as num?)?.toDouble();
+        _userRegion = data['region'] as String?;
+        print('User location: ${data['city']}, ${data['region']} (country: ${data['country_name']})');
+        print('User region for filtering: "$_userRegion"');
       }
     } catch (e) {
-      print('⚠️ Could not determine user location: $e');
+      print('Could not determine user location: $e');
     }
   }
 
@@ -710,12 +743,14 @@ class _EligibilityPageState extends State<EligibilityPage> {
     final savedSeasonId = prefs.getInt('selectedSeasonId');
     _isAutoReloadEnabled = prefs.getBool(_autoReloadPrefKey) ?? true;
     _isMobileViewEnabled = prefs.getBool(_mobileViewPrefKey) ?? false;
+    _autoHighlightEnabled = prefs.getBool(_autoHighlightPrefKey) ?? true;
     _textScaleFactor = prefs.getDouble(_textScalePrefKey) ?? 1.0;
 
     // Load column visibility settings
     await _loadColumnVisibility(prefs);
     await _loadRowColorState(prefs);
     await _loadTeamAwards(prefs);
+    await _loadTeamNotebookStatus(prefs);
     await _loadProgramEnabled(prefs);
 
     RobotProgram initialProgram = RobotProgram.values.firstWhere(
@@ -1061,7 +1096,17 @@ class _EligibilityPageState extends State<EligibilityPage> {
     teamsWithCombinedScoresForOverallRank.sort((a, b) => (b['combinedScore'] as int).compareTo(a['combinedScore'] as int));
     Map<int, int> overallSkillsRanksMap = {};
     for (int i = 0; i < teamsWithCombinedScoresForOverallRank.length; i++) {
-        overallSkillsRanksMap[teamsWithCombinedScoresForOverallRank[i]['teamId'] as int] = i + 1;
+        // Competition ranking: tied scores get the same rank, next rank skips
+        if (i == 0) {
+          overallSkillsRanksMap[teamsWithCombinedScoresForOverallRank[i]['teamId'] as int] = 1;
+        } else {
+          final prevScore = teamsWithCombinedScoresForOverallRank[i - 1]['combinedScore'] as int;
+          final curScore = teamsWithCombinedScoresForOverallRank[i]['combinedScore'] as int;
+          overallSkillsRanksMap[teamsWithCombinedScoresForOverallRank[i]['teamId'] as int] =
+              curScore == prevScore
+                  ? overallSkillsRanksMap[teamsWithCombinedScoresForOverallRank[i - 1]['teamId'] as int]!
+                  : i + 1;
+        }
     }
 
     Map<String, List<Ranking>> gradeQualifierRankingsMap = {};
@@ -1107,12 +1152,21 @@ class _EligibilityPageState extends State<EligibilityPage> {
             gradeTeamsWithCombinedScores.sort((a,b) => (b['combinedScore'] as int).compareTo(a['combinedScore'] as int));
             List<Map<String,dynamic>> gradeSkillRanks = [];
             for(int i=0; i < gradeTeamsWithCombinedScores.length; i++){
-                gradeSkillRanks.add({'teamId': gradeTeamsWithCombinedScores[i]['teamId'] as int, 'rank': i+1 });
+                int rank;
+                if (i == 0) {
+                  rank = 1;
+                } else {
+                  final prevScore = gradeTeamsWithCombinedScores[i - 1]['combinedScore'] as int;
+                  final curScore = gradeTeamsWithCombinedScores[i]['combinedScore'] as int;
+                  rank = curScore == prevScore ? (gradeSkillRanks[i - 1]['rank'] as int) : i + 1;
+                }
+                gradeSkillRanks.add({'teamId': gradeTeamsWithCombinedScores[i]['teamId'] as int, 'rank': rank });
             }
             gradeSkillsRankingsMap[gradeOrContext] = gradeSkillRanks;
         }
 
         // Programming Only Skills Re-ranking (for applicable contexts)
+        // TM includes teams with 0 score if they have at least 1 attempt
         if (checkProgRankRule) {
             List<Map<String,dynamic>> programmingOnlyPool = [];
             for (var teamEntry in teamMap.entries) {
@@ -1123,15 +1177,28 @@ class _EligibilityPageState extends State<EligibilityPage> {
 
                 if (include) {
                     final progRun = bestProgrammingRuns[teamEntry.key];
+                    // Include if they have any programming skills run (even score 0)
+                    final teamProgSkills = rawSkills.where((s) => s.teamId == teamEntry.key && s.type == 'programming');
                     if (progRun != null && progRun.score > 0) {
                         programmingOnlyPool.add({'teamId': teamEntry.key, 'score': progRun.score});
+                    } else if (teamProgSkills.isNotEmpty) {
+                        // Team attempted programming but best score is 0
+                        programmingOnlyPool.add({'teamId': teamEntry.key, 'score': 0});
                     }
                 }
             }
             programmingOnlyPool.sort((a,b) => (b['score'] as int).compareTo(a['score'] as int));
             List<Map<String,dynamic>> progOnlyRanks = [];
             for(int i=0; i < programmingOnlyPool.length; i++){
-                progOnlyRanks.add({'teamId': programmingOnlyPool[i]['teamId'] as int, 'rank': i+1});
+                int rank;
+                if (i == 0) {
+                  rank = 1;
+                } else {
+                  final prevScore = programmingOnlyPool[i - 1]['score'] as int;
+                  final curScore = programmingOnlyPool[i]['score'] as int;
+                  rank = curScore == prevScore ? (progOnlyRanks[i - 1]['rank'] as int) : i + 1;
+                }
+                progOnlyRanks.add({'teamId': programmingOnlyPool[i]['teamId'] as int, 'rank': rank});
             }
             gradeProgrammingOnlyRankingsMap[gradeOrContext] = progOnlyRanks;
         }
@@ -1173,16 +1240,16 @@ class _EligibilityPageState extends State<EligibilityPage> {
         isInSkillsRank = displaySkillsRank > 0 && displaySkillsRank <= skillsCutoffValue;
 
         if (_programRules!.requiresRankInPositiveProgrammingSkills) {
-            // Always calculate the cutoff, even if team doesn't have a programming score
             programmingOnlyRankCutoffValue = max(1, applyProgramSpecificRounding(totalRankedTeamsInDivision * eligibilityThreshold, _selectedProgram!));
 
             final List<Map<String,dynamic>>? progOnlyPool = gradeProgrammingOnlyRankingsMap["overall_for_prog_rank"];
-            if (teamProgrammingScore > 0 && progOnlyPool != null && progOnlyPool.isNotEmpty) {
+            if (progOnlyPool != null && progOnlyPool.isNotEmpty) {
                 final teamEntryInPool = progOnlyPool.firstWhere((e) => e['teamId'] == team.id, orElse: () => {});
                 teamProgrammingOnlyRank = teamEntryInPool['rank'] ?? -1;
-                meetsProgOnlyRankCriterion = teamProgrammingOnlyRank > 0 && teamProgrammingOnlyRank <= programmingOnlyRankCutoffValue;
+                // Must have a positive programming score AND be within cutoff
+                meetsProgOnlyRankCriterion = teamProgrammingScore > 0 && teamProgrammingOnlyRank > 0 && teamProgrammingOnlyRank <= programmingOnlyRankCutoffValue;
             } else {
-                meetsProgOnlyRankCriterion = false; // No positive score or no pool
+                meetsProgOnlyRankCriterion = false;
             }
         }
 
@@ -1221,19 +1288,24 @@ class _EligibilityPageState extends State<EligibilityPage> {
             }
 
             final List<Map<String,dynamic>>? progOnlyPool = gradeProgrammingOnlyRankingsMap[gradeContextKey];
-            if (teamProgrammingScore > 0 && progOnlyPool != null && progOnlyPool.isNotEmpty) {
+            if (progOnlyPool != null && progOnlyPool.isNotEmpty) {
                 final teamEntryInPool = progOnlyPool.firstWhere((e) => e['teamId'] == team.id, orElse: () => {});
                 teamProgrammingOnlyRank = teamEntryInPool['rank'] ?? -1;
-                meetsProgOnlyRankCriterion = teamProgrammingOnlyRank > 0 && teamProgrammingOnlyRank <= programmingOnlyRankCutoffValue;
+                meetsProgOnlyRankCriterion = teamProgrammingScore > 0 && teamProgrammingOnlyRank > 0 && teamProgrammingOnlyRank <= programmingOnlyRankCutoffValue;
             } else {
                  meetsProgOnlyRankCriterion = false;
             }
         }
       }
 
+      // Notebook status: 1 = Not Submitted, 2 = Developing → ineligible
+      final int notebookStatus = _teamNotebookStatus[team.id] ?? 0;
+      final bool notebookEligible = notebookStatus != 1 && notebookStatus != 2;
+
       bool isEligible = isInQualifyingRank &&
                         isInSkillsRank &&
-                        meetsProgOnlyRankCriterion && // Add new criterion
+                        meetsProgOnlyRankCriterion &&
+                        notebookEligible &&
                         (_programRules!.requiresProgrammingSkills ? (teamProgrammingScore > 0) : true);
 
       return TeamSkills(
@@ -1407,6 +1479,8 @@ class _EligibilityPageState extends State<EligibilityPage> {
           _buildSortableHeader(SortableColumn.qualifierRank, 'Qual', 1, textAlign: TextAlign.center),
         if (_columnVisibility[SortableColumn.skillsRank] ?? true)
           _buildSortableHeader(SortableColumn.skillsRank, 'Skills', 1, textAlign: TextAlign.center),
+        if (_columnVisibility[SortableColumn.programmingOnlyRank] ?? true)
+          _buildSortableHeader(SortableColumn.programmingOnlyRank, 'Prog Rank', 1, textAlign: TextAlign.center),
         if (_columnVisibility[SortableColumn.driverScore] ?? true)
           _buildSortableHeader(SortableColumn.driverScore, driverLabel, 1, textAlign: TextAlign.center),
         if (_columnVisibility[SortableColumn.pilotAttempts] ?? true)
@@ -1415,6 +1489,8 @@ class _EligibilityPageState extends State<EligibilityPage> {
           _buildSortableHeader(SortableColumn.programmingScore, 'Auton', 1, textAlign: TextAlign.center),
         if (_columnVisibility[SortableColumn.autonAttempts] ?? true)
           _buildSortableHeader(SortableColumn.autonAttempts, 'Auton Attempts', 1, textAlign: TextAlign.center),
+        if (_columnVisibility[SortableColumn.notebookStatus] ?? true)
+          _buildSortableHeader(SortableColumn.notebookStatus, 'Notebook', 1, textAlign: TextAlign.center),
         if (_columnVisibility[SortableColumn.details] ?? true)
           Expanded(
             flex: 1,
@@ -1439,10 +1515,12 @@ class _EligibilityPageState extends State<EligibilityPage> {
     // ... (implementation is the same as previous correct version)
     final isEligible = record.eligible;
 
-    // Eligibility-based color (existing logic)
-    final Color eligibilityColor = isEligible
-        ? Colors.green.withAlpha(40)
-        : (record.inRank || record.inSkill ? Colors.orange.withAlpha(30) : Colors.transparent);
+    // Eligibility-based color (can be disabled via settings)
+    final Color eligibilityColor = _autoHighlightEnabled
+        ? (isEligible
+            ? Colors.green.withAlpha(40)
+            : (record.inRank || record.inSkill ? Colors.orange.withAlpha(30) : Colors.transparent))
+        : Colors.transparent;
 
     // Manual highlight color (NEW)
     final int colorIndex = _rowColorState[record.team.id] ?? 0;
@@ -1530,6 +1608,10 @@ class _EligibilityPageState extends State<EligibilityPage> {
               Expanded(flex: 1, child: _TableDataCell(_formatRank(record.skillsRank),
                   color: record.inSkill ? Colors.lightGreenAccent.shade100 : Colors.orangeAccent.shade100,
                   textAlign: TextAlign.center)),
+            if (_columnVisibility[SortableColumn.programmingOnlyRank] ?? true)
+              Expanded(flex: 1, child: _TableDataCell(_formatRank(record.programmingOnlyRank),
+                  color: record.meetsProgrammingOnlyRankCriterion ? Colors.lightGreenAccent.shade100 : Colors.orangeAccent.shade100,
+                  textAlign: TextAlign.center)),
             if (_columnVisibility[SortableColumn.driverScore] ?? true)
               Expanded(flex: 1, child: _TableDataCell(record.driverScore.toString(), textAlign: TextAlign.center)),
             if (_columnVisibility[SortableColumn.pilotAttempts] ?? true)
@@ -1538,6 +1620,23 @@ class _EligibilityPageState extends State<EligibilityPage> {
               Expanded(flex: 1, child: _TableDataCell(record.programmingScore.toString(), textAlign: TextAlign.center)),
             if (_columnVisibility[SortableColumn.autonAttempts] ?? true)
               Expanded(flex: 1, child: _TableDataCell(record.programmingAttempts.toString(), textAlign: TextAlign.center)),
+            if (_columnVisibility[SortableColumn.notebookStatus] ?? true)
+              Expanded(
+                flex: 1,
+                child: Center(
+                  child: IconButton(
+                    icon: Icon(
+                      _notebookStatusIcon(_teamNotebookStatus[record.team.id] ?? 0),
+                      size: 18,
+                      color: _notebookStatusColor(_teamNotebookStatus[record.team.id] ?? 0),
+                    ),
+                    tooltip: _notebookStatusLabels[_teamNotebookStatus[record.team.id] ?? 0],
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: () => _showNotebookStatusDialog(record.team),
+                  ),
+                ),
+              ),
             if (_columnVisibility[SortableColumn.details] ?? true)
               Expanded(
                 flex: 1,
@@ -1557,7 +1656,64 @@ class _EligibilityPageState extends State<EligibilityPage> {
     );
   }
   
-  // THIS METHOD WAS MISSING IN THE PREVIOUS RESPONSE - RE-INSERTING IT
+  IconData _notebookStatusIcon(int status) {
+    switch (status) {
+      case 1: return Icons.cancel_outlined;         // Not Submitted
+      case 2: return Icons.pending_outlined;         // Developing
+      case 3: return Icons.check_circle_outline;     // Fully Developed
+      case 4: return Icons.star_outline;             // Top of the Rankings
+      default: return Icons.help_outline;            // Not Set
+    }
+  }
+
+  Color _notebookStatusColor(int status) {
+    switch (status) {
+      case 1: return Colors.redAccent.shade100;      // Not Submitted
+      case 2: return Colors.orangeAccent.shade100;   // Developing
+      case 3: return Colors.greenAccent.shade100;    // Fully Developed
+      case 4: return Colors.amberAccent.shade100;    // Top of the Rankings
+      default: return Colors.grey;                   // Not Set
+    }
+  }
+
+  Future<void> _showNotebookStatusDialog(Team team) async {
+    final int currentStatus = _teamNotebookStatus[team.id] ?? 0;
+    final int? selected = await showDialog<int>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: Text('Notebook Status - ${team.number}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: List.generate(_notebookStatusLabels.length, (index) {
+              return ListTile(
+                leading: Icon(
+                  _notebookStatusIcon(index),
+                  color: _notebookStatusColor(index),
+                ),
+                title: Text(_notebookStatusLabels[index]),
+                selected: currentStatus == index,
+                selectedTileColor: Theme.of(context).colorScheme.primaryContainer.withAlpha(80),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                onTap: () => Navigator.pop(context, index),
+              );
+            }),
+          ),
+        );
+      },
+    );
+    if (selected != null && selected != currentStatus) {
+      setState(() {
+        if (selected == 0) {
+          _teamNotebookStatus.remove(team.id);
+        } else {
+          _teamNotebookStatus[team.id] = selected;
+        }
+      });
+      await _saveTeamNotebookStatus();
+    }
+  }
+
   Widget _buildTableForRecordsList(List<TeamSkills> recordsList) {
     if (recordsList.isEmpty) {
       return const Padding(
@@ -1768,8 +1924,17 @@ class _EligibilityPageState extends State<EligibilityPage> {
           case SortableColumn.programmingScore:
             compareResult = a.programmingScore.compareTo(b.programmingScore);
             break;
+          case SortableColumn.programmingOnlyRank:
+            if (a.programmingOnlyRank == -1 && b.programmingOnlyRank == -1) compareResult = 0;
+            else if (a.programmingOnlyRank == -1) compareResult = _sortAscending ? 1 : -1;
+            else if (b.programmingOnlyRank == -1) compareResult = _sortAscending ? -1 : 1;
+            else compareResult = a.programmingOnlyRank.compareTo(b.programmingOnlyRank);
+            break;
           case SortableColumn.autonAttempts:
             compareResult = a.programmingAttempts.compareTo(b.programmingAttempts);
+            break;
+          case SortableColumn.notebookStatus:
+            compareResult = (_teamNotebookStatus[a.team.id] ?? 0).compareTo(_teamNotebookStatus[b.team.id] ?? 0);
             break;
           case SortableColumn.details:
             // Details column is not sortable, no comparison needed
@@ -1945,6 +2110,161 @@ class _EligibilityPageState extends State<EligibilityPage> {
     );
   }
 
+  Map<String, dynamic> _generateEligibilityExport() {
+    if (_programRules == null || teams.isEmpty || _selectedProgram == null) {
+      return {'error': 'No data loaded'};
+    }
+
+    final Map<int, Team> teamMap = {for (var t in teams) t.id: t};
+
+    // Rebuild all intermediate calculations for export
+    Map<int, RawSkill> bestProgrammingRuns = {};
+    Map<int, RawSkill> bestDriverRuns = {};
+
+    for (var teamEntry in teamMap.entries) {
+      int teamId = teamEntry.key;
+      List<RawSkill> teamRawSkills = rawSkills.where((s) => s.teamId == teamId).toList();
+      RawSkill? bestProg = teamRawSkills
+          .where((s) => s.type == 'programming')
+          .fold(null, (RawSkill? prev, current) => (prev == null || current.score > prev.score) ? current : prev);
+      if (bestProg != null) bestProgrammingRuns[teamId] = bestProg;
+      RawSkill? bestDriver = teamRawSkills
+          .where((s) => s.type == 'driver')
+          .fold(null, (RawSkill? prev, current) => (prev == null || current.score > prev.score) ? current : prev);
+      if (bestDriver != null) bestDriverRuns[teamId] = bestDriver;
+    }
+
+    // Combined skills ranking (competition-style tie ranking)
+    List<Map<String, dynamic>> combinedScoresForRank = [];
+    for (var teamEntry in teamMap.entries) {
+      int teamId = teamEntry.key;
+      int combinedScore = (bestProgrammingRuns[teamId]?.score ?? 0) + (bestDriverRuns[teamId]?.score ?? 0);
+      if (combinedScore > 0 || bestProgrammingRuns.containsKey(teamId) || bestDriverRuns.containsKey(teamId)) {
+        combinedScoresForRank.add({'teamId': teamId, 'teamNumber': teamEntry.value.number, 'combinedScore': combinedScore});
+      }
+    }
+    combinedScoresForRank.sort((a, b) => (b['combinedScore'] as int).compareTo(a['combinedScore'] as int));
+    for (int i = 0; i < combinedScoresForRank.length; i++) {
+      if (i == 0) {
+        combinedScoresForRank[i]['overallSkillsRank'] = 1;
+      } else {
+        final prevScore = combinedScoresForRank[i - 1]['combinedScore'] as int;
+        final curScore = combinedScoresForRank[i]['combinedScore'] as int;
+        combinedScoresForRank[i]['overallSkillsRank'] = curScore == prevScore
+            ? combinedScoresForRank[i - 1]['overallSkillsRank']
+            : i + 1;
+      }
+    }
+
+    // Programming-only pool (includes 0-score teams with attempts, competition-style tie ranking)
+    List<Map<String, dynamic>> progOnlyPool = [];
+    for (var teamEntry in teamMap.entries) {
+      final progRun = bestProgrammingRuns[teamEntry.key];
+      final hasProgAttempt = rawSkills.any((s) => s.teamId == teamEntry.key && s.type == 'programming');
+      if (progRun != null && progRun.score > 0) {
+        progOnlyPool.add({'teamId': teamEntry.key, 'teamNumber': teamEntry.value.number, 'programmingScore': progRun.score});
+      } else if (hasProgAttempt) {
+        progOnlyPool.add({'teamId': teamEntry.key, 'teamNumber': teamEntry.value.number, 'programmingScore': 0});
+      }
+    }
+    progOnlyPool.sort((a, b) => (b['programmingScore'] as int).compareTo(a['programmingScore'] as int));
+    for (int i = 0; i < progOnlyPool.length; i++) {
+      if (i == 0) {
+        progOnlyPool[i]['programmingOnlyRank'] = 1;
+      } else {
+        final prevScore = progOnlyPool[i - 1]['programmingScore'] as int;
+        final curScore = progOnlyPool[i]['programmingScore'] as int;
+        progOnlyPool[i]['programmingOnlyRank'] = curScore == prevScore
+            ? progOnlyPool[i - 1]['programmingOnlyRank']
+            : i + 1;
+      }
+    }
+
+    // Cutoff calculations
+    final totalRankedTeams = rawRankings.where((r) => r.rank > 0).length;
+    final threshold = eligibilityThreshold;
+    final qualCutoff = max(1, applyProgramSpecificRounding(totalRankedTeams * threshold, _selectedProgram!));
+    final skillsCutoff = qualCutoff;
+    final progOnlyCutoff = _programRules!.requiresRankInPositiveProgrammingSkills
+        ? max(1, applyProgramSpecificRounding(totalRankedTeams * threshold, _selectedProgram!))
+        : -1;
+
+    // Per-team eligibility breakdown
+    final records = tableRecords;
+    List<Map<String, dynamic>> teamBreakdowns = records.map((record) {
+      final team = record.team;
+      return {
+        'teamId': team.id,
+        'teamNumber': team.number,
+        'teamName': team.name,
+        'grade': team.grade,
+        'qualifierRank': record.qualifierRank,
+        'qualifierRankCutoff': record.qualifierRankCutoff,
+        'inQualifierRank': record.inRank,
+        'skillsRank': record.skillsRank,
+        'skillsRankCutoff': record.skillsRankCutoff,
+        'inSkillsRank': record.inSkill,
+        'driverScore': record.driverScore,
+        'driverAttempts': record.driverAttempts,
+        'programmingScore': record.programmingScore,
+        'programmingAttempts': record.programmingAttempts,
+        'programmingOnlyRank': record.programmingOnlyRank,
+        'programmingOnlyRankCutoff': record.programmingOnlyRankCutoff,
+        'meetsProgrammingOnlyRankCriterion': record.meetsProgrammingOnlyRankCriterion,
+        'notebookStatus': _notebookStatusLabels[_teamNotebookStatus[team.id] ?? 0],
+        'eligible': record.eligible,
+      };
+    }).toList();
+
+    // Sort by team number for readability
+    teamBreakdowns.sort((a, b) => (a['teamNumber'] as String).compareTo(b['teamNumber'] as String));
+
+    return {
+      'exportTimestamp': DateTime.now().toIso8601String(),
+      'event': {
+        'id': selectedEvent?.id,
+        'name': selectedEvent?.name,
+        'sku': selectedEvent?.sku,
+      },
+      'program': _selectedProgram?.name,
+      'season': _selectedSeason?.name,
+      'division': selectedDivision?.name,
+      'configuration': {
+        'isCombinedDivisionEvent': isCombinedDivisionEvent,
+        'forceSplitExcellence': _forceSplitExcellence,
+        'eventHasSplitGradeAwards': _eventHasSplitGradeAwards,
+        'eligibilityThreshold': threshold,
+        'requiresProgrammingSkills': _programRules!.requiresProgrammingSkills,
+        'requiresRankInPositiveProgrammingSkills': _programRules!.requiresRankInPositiveProgrammingSkills,
+      },
+      'summary': {
+        'totalTeams': teams.length,
+        'totalRankedTeams': totalRankedTeams,
+        'qualifierRankCutoff': qualCutoff,
+        'skillsRankCutoff': skillsCutoff,
+        'programmingOnlyRankCutoff': progOnlyCutoff,
+        'teamsWithProgrammingScores': progOnlyPool.length,
+        'eligibleTeams': records.where((r) => r.eligible).length,
+      },
+      'programmingOnlyRankings': progOnlyPool,
+      'overallSkillsRankings': combinedScoresForRank,
+      'teamBreakdowns': teamBreakdowns,
+    };
+  }
+
+  void _exportEligibilityData() {
+    final data = _generateEligibilityExport();
+    final jsonString = const JsonEncoder.withIndent('  ').convert(data);
+    final bytes = utf8.encode(jsonString);
+    final blob = html.Blob([bytes], 'application/json');
+    final url = html.Url.createObjectUrlFromBlob(blob);
+    final eventName = selectedEvent?.name.replaceAll(RegExp(r'[^\w\s-]'), '') ?? 'export';
+    html.AnchorElement(href: url)
+      ..setAttribute('download', 'eligibility_export_$eventName.json')
+      ..click();
+    html.Url.revokeObjectUrl(url);
+  }
+
   Future<void> _showDevModeDialog() async {
     bool tempForceSplit = _forceSplitExcellence;
     await showDialog(
@@ -1966,6 +2286,17 @@ class _EligibilityPageState extends State<EligibilityPage> {
                     subtitle: const Text('Calculate as split grade awards even if the event does not have them'),
                     value: tempForceSplit,
                     onChanged: (val) => setDialogState(() => tempForceSplit = val),
+                  ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.download),
+                    title: const Text('Export Eligibility Data'),
+                    subtitle: const Text('Download JSON with all calculations and rankings'),
+                    enabled: selectedEvent != null && teams.isNotEmpty,
+                    onTap: selectedEvent != null && teams.isNotEmpty ? () {
+                      Navigator.pop(context);
+                      _exportEligibilityData();
+                    } : null,
                   ),
                 ],
               ),
@@ -1995,6 +2326,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
     List<Season> tempAvailableSeasons = List.from(_availableSeasons);
     bool tempAutoReloadEnabled = _isAutoReloadEnabled;
     bool tempMobileViewEnabled = _isMobileViewEnabled;
+    bool tempAutoHighlightEnabled = _autoHighlightEnabled;
     double tempTextScaleFactor = _textScaleFactor;
     Map<RobotProgram, bool> tempProgramEnabled = Map.from(_programEnabled);
     bool dialogIsLoading = false;
@@ -2083,6 +2415,18 @@ class _EligibilityPageState extends State<EligibilityPage> {
                         dense: true,
                         contentPadding: EdgeInsets.zero,
                       ),
+                      SwitchListTile(
+                        title: const Text('Auto Highlight Rows'),
+                        subtitle: const Text('Color rows by eligibility status'),
+                        value: tempAutoHighlightEnabled,
+                        onChanged: (bool value) {
+                          setStateDialog(() {
+                            tempAutoHighlightEnabled = value;
+                          });
+                        },
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                      ),
                       const SizedBox(height: 10),
                       const Divider(),
                       const SizedBox(height: 10),
@@ -2122,11 +2466,13 @@ class _EligibilityPageState extends State<EligibilityPage> {
                           await prefs.setInt('selectedSeasonId', tempSelectedSeason!.id);
                           await prefs.setBool(_autoReloadPrefKey, tempAutoReloadEnabled);
                           await prefs.setBool(_mobileViewPrefKey, tempMobileViewEnabled);
+                          await prefs.setBool(_autoHighlightPrefKey, tempAutoHighlightEnabled);
                           await prefs.setDouble(_textScalePrefKey, tempTextScaleFactor);
 
                           bool needsEventReload = _selectedProgram != tempSelectedProgram || _selectedSeason != tempSelectedSeason;
                           bool autoReloadChanged = _isAutoReloadEnabled != tempAutoReloadEnabled;
                           bool mobileViewChanged = _isMobileViewEnabled != tempMobileViewEnabled;
+                          bool autoHighlightChanged = _autoHighlightEnabled != tempAutoHighlightEnabled;
                           bool textSizeChanged = _textScaleFactor != tempTextScaleFactor;
 
                           if (!mounted) return;
@@ -2137,6 +2483,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
                             _availableSeasons = tempAvailableSeasons;
                             _isAutoReloadEnabled = tempAutoReloadEnabled;
                             _isMobileViewEnabled = tempMobileViewEnabled;
+                            _autoHighlightEnabled = tempAutoHighlightEnabled;
                             _textScaleFactor = tempTextScaleFactor;
                             api = RobotEventsApiService(program: _selectedProgram!, season: _selectedSeason!);
                             if (needsEventReload) { _clearEventData(resetSort: true); events = []; skuCtrl.clear(); searchCtrl.clear(); selectedEvent=null; }
@@ -2145,7 +2492,7 @@ class _EligibilityPageState extends State<EligibilityPage> {
                           
                           if (needsEventReload) {
                             await _loadEvents();
-                          } else if (autoReloadChanged || mobileViewChanged || textSizeChanged) {
+                          } else if (autoReloadChanged || mobileViewChanged || textSizeChanged || autoHighlightChanged) {
                             _manageAutoReloadTimer();
                             if(mounted) setState((){});
                           }
@@ -2170,7 +2517,23 @@ class _EligibilityPageState extends State<EligibilityPage> {
               builder: (context, setStateDialog) {
                 return Column(
                   mainAxisSize: MainAxisSize.min,
-                  children: SortableColumn.values.map((column) {
+                  children: const [
+                    SortableColumn.teamNumber,
+                    SortableColumn.teamName,
+                    SortableColumn.grade,
+                    SortableColumn.organization,
+                    SortableColumn.state,
+                    SortableColumn.eligible,
+                    SortableColumn.qualifierRank,
+                    SortableColumn.skillsRank,
+                    SortableColumn.programmingOnlyRank,
+                    SortableColumn.driverScore,
+                    SortableColumn.pilotAttempts,
+                    SortableColumn.programmingScore,
+                    SortableColumn.autonAttempts,
+                    SortableColumn.notebookStatus,
+                    SortableColumn.details,
+                  ].map((column) {
                     return CheckboxListTile(
                       title: Text(_getColumnDisplayName(column)),
                       value: _columnVisibility[column] ?? true,
@@ -2638,8 +3001,12 @@ class _EligibilityPageState extends State<EligibilityPage> {
         return 'Eligible';
       case SortableColumn.pilotAttempts:
         return isADC ? 'Piloting Attempts' : 'Driver Attempts';
+      case SortableColumn.programmingOnlyRank:
+        return 'Programming Skills Rank';
       case SortableColumn.autonAttempts:
         return 'Programming Attempts';
+      case SortableColumn.notebookStatus:
+        return 'Notebook Status';
       case SortableColumn.details:
         return 'Details';
     }

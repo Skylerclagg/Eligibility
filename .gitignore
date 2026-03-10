@@ -11,6 +11,15 @@
 .svn/
 .swiftpm/
 migrate_working_dir/
+nul
+
+# Generated platform plugin registrants
+linux/flutter/
+macos/Flutter/GeneratedPluginRegistrant.swift
+windows/flutter/
+
+# Claude
+.claude/
 
 # IntelliJ related
 *.iml
